@@ -25,7 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // 이 파일을 고칠 때마다 올린다 (앱/배포.sh 가 커밋에 고정해 배포한다).
-export const 버전 = "2026-09-23p";
+export const 버전 = "2026-09-28a";
 
 const 여기 = path.dirname(fileURLToPath(import.meta.url));
 // 수강생 데이터 폴더(원고·사진). 앱 판에서는 실행() 이 옵션.데이터폴더 로 바꾼다. 프로그램 폴더(임시)와 다르다.
@@ -258,6 +258,19 @@ export async function 실행(옵션 = {}) {
       if (!e) return { x: b.left + b.width / 2, y: b.top + b.height / 2, w: b.width, h: b.height };
       return { x: Math.min(b.right - 3, e.right + 8), y: e.bottom - Math.min(12, e.height / 2), w: b.width, h: b.height };
     };
+    // 화면 내리기 — 필요한 픽셀만큼만.
+    // 코덱스 크롬 확장의 ax.scroll 세 번째 값은 '화면 한 장' 단위다 (확장 26.924 코드: 화면 높이 × 장수 만큼 휠).
+    // 예전엔 1 을 줘서 한 번에 한 화면씩 넘어갔고, 화면이 작은 윈도우 노트북에서는 요소가 위아래로 왔다 갔다만 하다 화면 밖에 남았다
+    // (2026-09-28 윈도우 실측: 표 칸을 못 눌러 표가 빈 채로 남고, 다음 문단이 표 첫 칸에 들어가고, 뒤 소제목까지 줄줄이 깨짐).
+    // 그래서 장수를 소수로 준다 (예: 230px 내리기 = 230 / 화면높이 장). 안 되면 픽셀 단위 cua.scroll 로.
+    const 화면내리기 = async (델타, f) => {
+      if (!(Math.abs(델타) >= 1)) return "안 움직임";
+      const 점 = [Math.round(f.w / 2), Math.round(f.h / 2)];
+      const 장 = Math.round(Math.min(3, Math.abs(델타) / Math.max(300, f.h)) * 1000) / 1000;
+      try { await ax.scroll(점, 델타 > 0 ? "down" : "up", Math.max(0.05, 장)); return "ax"; } catch {}
+      try { if (tab.cua && typeof tab.cua.scroll === "function") { await tab.cua.scroll({ x: 점[0], y: 점[1], scrollX: 0, scrollY: Math.round(델타) }); return "cua"; } } catch {}
+      return "실패";
+    };
     const 좌표 = async (loc, 측정 = 가운데) => {
       const 재기 = () => loc.evaluate(측정);
       let r = await 재기();
@@ -270,14 +283,16 @@ export async function 실행(옵션 = {}) {
       // 위쪽 도구 모음(문단 서식·인용구·표·사진·저장 버튼)은 화면에 붙어 있어 스크롤해도 제자리다. 그런데 150px 안쪽이라 '위로 가려졌다' 로 보고
       // 누를 때마다 위로 6번씩 스크롤했다. 글 쓰는 도중 화면이 맨 위로 튀었다 내려오던 원인 (2026-09-23 진현님 영상: 소제목마다 반복).
       // 그래서 붙어 있는 것(fixed·sticky 안에 든 것)은 스크롤하지 않고, 스크롤해도 자리가 안 바뀌면 바로 멈춘다.
-      const 붙음 = await loc.evaluate((el) => { for (let e = el; e && e.nodeType === 1; e = e.parentElement) { const p = getComputedStyle(e).position; if (p === "fixed" || p === "sticky") return true; } return false; }).catch(() => false);
+      // 붙어 있는지는 위쪽(도구 모음 자리)에 있는 것만 본다. 아래로 벗어난 본문 요소는 무조건 내린다.
+      const 붙음 = r.y < 위한계 ? await loc.evaluate((el) => { for (let e = el; e && e.nodeType === 1; e = e.parentElement) { const p = getComputedStyle(e).position; if (p === "fixed" || p === "sticky") return true; } return false; }).catch(() => false) : false;
+      // 누를 자리를 위한계~아래한계 사이 한가운데로 가져온다. 두 번 연속 안 움직이면(문서 맨 끝·맨 위) 그만.
+      let 안움직임 = 0;
       for (let i = 0; !붙음 && i < 6 && (r.y < 위한계 || r.y > 아래한계()); i++) {
-        const 위로 = r.y < 위한계;
-        try { await ax.scroll([Math.round(f.x + f.w / 2), Math.round(f.y + f.h / 2)], 위로 ? "up" : "down", 1); } catch {}
-        await 쉬기(450);
         const 전y = r.y;
+        await 화면내리기(r.y - (위한계 + 아래한계()) / 2, f);
+        await 쉬기(400);
         r = await 재기(); f = await 프레임위치();
-        if (Math.abs(r.y - 전y) < 2) break;
+        if (Math.abs(r.y - 전y) < 2) { if (++안움직임 >= 2) break; } else 안움직임 = 0;
       }
       if (r.y < 0 || r.y > f.h) throw new Error(`요소를 화면 안으로 못 가져옴 (y=${Math.round(r.y)}, 화면높이=${f.h})`);
       return { x: Math.round(f.x + r.x), y: Math.round(f.y + r.y), w: r.w, h: r.h };
@@ -456,7 +471,11 @@ export async function 실행(옵션 = {}) {
       const 추가 = await 본문추가하기();
       if (추가 !== "누름") {
         const 마지막문단 = F.locator(R.본문문단).last();
-        if ((await 마지막문단.count()) > 0) { await 끝클릭(마지막문단); await 키("Enter"); }
+        // 끝 줄을 못 눌러도 멈추지 않는다 (앞 호출이 끝난 자리에 커서가 그대로 있다)
+        if ((await 마지막문단.count()) > 0) {
+          try { await 끝클릭(마지막문단); await 키("Enter"); }
+          catch (e) { 적기("이어쓰기", { 경고: `끝 줄을 못 눌러 커서 자리 그대로 이어 씀: ${String(e?.message || e).slice(0, 80)}` }); }
+        }
       }
       await 쉬기(400);
     }
@@ -508,7 +527,7 @@ export async function 실행(옵션 = {}) {
       if (i < 시작블록) continue;
       if (시간초과()) { 이어서 = { 원고: 옵션.원고 || "원고1.json", 시작블록: i }; break; }
       const 이름 = `블록${i + 1}·${블록.종류}`;
-      await 글감닫기(이름, "쓰기 전에");
+      try { await 글감닫기(이름, "쓰기 전에"); } catch (e) { 적기(이름, { 경고: `글감 확인 실패: ${String(e?.message || e).slice(0, 80)}` }); }
       try {
         if (블록.종류 === "문단") {
           await 본문서식으로();
@@ -635,7 +654,14 @@ export async function 실행(옵션 = {}) {
       } catch (e) {
         // 블록 하나가 안 되면 그 블록만 건너뛰고 글은 끝까지 쓴다. 열린 메뉴·선택 상태는 Escape 로 정리한다.
         적기(이름, { 건너뜀: String(e?.message || e).slice(0, 300) });
-        try { await 키("Escape"); await 쉬기(300); await 본문추가하기(); } catch {}
+        // 표·인용구에서 멈추면 커서가 그 안에 남아 뒤 글이 전부 그 안으로 들어간다 (2026-09-28 윈도우 실측: 다음 문단이 표 첫 칸에 들어감).
+        // 그 부품 바로 아래 줄로 커서를 빼낸다.
+        try {
+          await 키("Escape"); await 쉬기(300);
+          const 부품 = 블록.종류 === "표" ? "se-table" : 블록.종류 === "인용구" ? "se-quotation" : "";
+          const 복구 = 부품 && (await F.locator(`.se-component.${부품}`).count().catch(() => 0)) > 0 ? await 아래로나가기(부품) : await 본문추가하기();
+          적기(이름, { 복구 });
+        } catch (e2) { 적기(이름, { 복구못함: String(e2?.message || e2).slice(0, 120) }); }
         if (옵션.실패시멈춤 === true) return 마무리();
       }
     }

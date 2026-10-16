@@ -17,7 +17,7 @@ import {dirname, join} from "node:path";
 import {pathToFileURL} from "node:url";
 
 export const 버전 = "2026-09-28b";
-const 저장소 = "makeit-edu/makeit-middle-kit";
+const 저장소 = "2025kkongggg-lang/makeit-middle-kit-naver";
 const 브랜치 = "main";
 const 목록파일 = "앱/목록.json";
 const 진입파일 = "앱/승인글.mjs";
@@ -184,3 +184,4 @@ export async function 불러오기({작업폴더, _재귀 = false} = {}) {
     return {정지: true, 안내: "깃허브의 키트 파일을 읽다가 멈췄어요. 인터넷 연결을 확인하고 1~2분 뒤 다시 해 주세요.", 상세: String(e?.message || e), 받은파일수: 받은.length};
   }
 }
+

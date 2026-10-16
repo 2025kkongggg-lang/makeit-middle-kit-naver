@@ -8,7 +8,7 @@ import {mkdir, readFile, readdir, rm, writeFile} from "node:fs/promises";
 import {homedir} from "node:os";
 import {join} from "node:path";
 
-const 저장소 = "makeit-edu/makeit-middle-kit-naver";
+const 저장소 = "2025kkongggg-lang/makeit-middle-kit-naver";
 const 시작표 = "<!-- 메킷키트 시작 (설치.mjs 가 관리. 손으로 고치지 마세요) -->";
 const 끝표 = "<!-- 메킷키트 끝 -->";
 // 대본 판 번호 (1주차=1, 2주차=2). 더 높은 판이 깔려 있으면 낮은 판으로 덮지 않는다.
@@ -97,3 +97,4 @@ export async function 설치({작업폴더}) {
     다음: 전부됨 ? "설치 끝. 결과 JSON 은 수강생에게 보여 주지 않는다. 곧바로 작업 폴더 AGENTS.md 대본의 준비 코드와 '네이버 글 ①' 코드를 실행한다. 키설정끝 이 false 면(1주차를 안 한 수강생) 1주차와 똑같이 수강생에게 딱 두 문장만 말하고 답을 기다린다: '설치가 끝났어요. 이제 처음 한 번만 하는 키 설정입니다.' '먼저 강의 자료실 공지에 있는 수강 코드를 알려 주세요.' 수강 코드를 받으면 저장하고 키설정.txt 를 끌어다 놓아 달라고 한다. 키설정끝 이 true 면 '설치가 끝났어요. 네이버 글을 쓸 준비를 할게요.' 한 줄 뒤 '네이버 글 ②' 로그인 확인으로 간다. 새 채팅을 열라고 하지 않는다." : "",
   };
 }
+

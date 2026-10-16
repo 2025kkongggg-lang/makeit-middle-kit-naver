@@ -16,7 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // 고칠 때마다 올린다 (앱/배포.sh 가 커밋에 고정해 배포한다).
-export const 버전 = "2026-09-23e";
+export const 버전 = "2026-10-16a";
 
 const 여기 = path.dirname(fileURLToPath(import.meta.url));
 const 프로젝트 = path.resolve(여기, "..");
@@ -64,6 +64,61 @@ const 원고형식 = {
   required: ["제목", "블록"],
 };
 
+// 조사 결과는 원고를 쓰기 전에만 사용한다. 글 본문에 확인하지 못한 수치나
+// 조건을 그럴듯하게 채워 넣지 않도록, 출처와 검증 필요 항목을 분리해 둔다.
+const 조사형식 = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    핵심질문: { type: "array", minItems: 5, maxItems: 5, items: { type: "string" } },
+    확인된사실: { type: "array", items: { type: "object", additionalProperties: false, properties: {
+      항목: { type: "string" }, 내용: { type: "string" }, 출처명: { type: "string" }, 출처URL: { type: "string" },
+    }, required: ["항목", "내용", "출처명", "출처URL"] } },
+    검증필요: { type: "array", items: { type: "string" } },
+    지역사업여부: { type: "string" },
+    공식신청경로: { type: "string" },
+  },
+  required: ["핵심질문", "확인된사실", "검증필요", "지역사업여부", "공식신청경로"],
+};
+
+function 응답텍스트(응답) {
+  const 본문 = (응답.output || []).flatMap((o) => o.content || []).find((c) => c.type === "output_text");
+  if (!본문) throw new Error("글 모델이 본문을 안 돌려줌: " + JSON.stringify(응답).slice(0, 300));
+  return 본문.text;
+}
+function 응답JSON(응답) { return JSON.parse(응답텍스트(응답)); }
+
+async function 공식자료조사({ 키, 키워드, 벤치마크 }) {
+  const 주제 = 키워드 || 벤치마크?.원문제목 || "정보성 블로그 주제";
+  const 질문 = `제목·키워드: ${주제}\n\n이 주제로 네이버 정보성 글을 쓰기 전 공식 자료만 조사해라. 정부 부처·지자체·공공기관·공식 사업 공고를 우선한다. 정확한 사업명, 현재 기준연도·시행 여부, 대상·금액·기간·신청 방법·서류·예외·제외 대상을 확인한다. 전국 제도와 지역 사업을 구분한다. 과거 기준은 현재 기준처럼 쓰지 않는다. 공식 출처로 확인되지 않은 내용은 확인된사실에 넣지 말고 검증필요에 넣는다. 독자가 가장 궁금해할 질문을 정확히 5개로 정한다.`;
+  try {
+    const r = await 오픈AI(키, "/responses", {
+      model: 글모델,
+      tools: [{ type: "web_search_preview" }],
+      input: [{ role: "developer", content: "검색 결과 중 공식 기관 자료만 사실 근거로 사용하라. 검색을 할 수 없거나 공식 근거가 부족하면 추측하지 말고 검증필요에 적어라." }, { role: "user", content: 질문 }],
+      text: { format: { type: "json_schema", name: "official_research", schema: 조사형식, strict: true } },
+      reasoning: { effort: "low" },
+    });
+    return { 조사: 응답JSON(r), 사용량: { model: 글모델, input_tokens: r.usage?.input_tokens || 0, output_tokens: r.usage?.output_tokens || 0 } };
+  } catch (e) {
+    // 인터넷 검색 도구를 쓸 수 없는 환경에서는 최신 정보를 본 것처럼 쓰지 않는다.
+    return { 조사: { 핵심질문: ["정확한 사업명은 무엇인가요?", "누가 신청할 수 있나요?", "금액·기간 기준은 무엇인가요?", "어떻게 신청하나요?", "어떤 예외를 확인해야 하나요?"], 확인된사실: [], 검증필요: ["공식 자료 검색을 사용할 수 없어 현재 기준·금액·신청 기간을 검증하지 못했습니다."], 지역사업여부: "공식 자료 확인 필요", 공식신청경로: "공식 기관 웹사이트에서 확인 필요" }, 사용량: null };
+  }
+}
+
+function 품질문제(원고) {
+  const 블록 = 원고?.블록 || [];
+  const 소제목 = 블록.filter((b) => b.종류 === "소제목");
+  const 문단 = 블록.filter((b) => b.종류 === "문단").flatMap((b) => b.글 || []);
+  const 정규화 = 문단.map((x) => String(x).replace(/\s+/g, "").replace(/[,.!?·]/g, ""));
+  const 중복 = 정규화.some((x, i) => x.length > 35 && 정규화.indexOf(x) !== i);
+  const 문제 = [];
+  if (소제목.length !== 5) 문제.push("소제목이 정확히 5개가 아닙니다");
+  if (소제목.some((b) => !String((b.글 || [])[0] || "").startsWith("[소제목]"))) 문제.push("소제목 표시가 빠졌습니다");
+  if (중복) 문제.push("같은 문장이 반복됩니다");
+  return 문제;
+}
+
 // 네이버 블로그 글 주소를 주면 뼈대(제목·인용구 제목·표·사진 개수·문단 요지)를 뽑는다. 모바일 페이지가 파싱하기 쉽다.
 export async function 벤치마크가져오기(주소) {
   const m = /blog\.naver\.com\/([^/?#]+)\/(\d+)/.exec(주소) || /blogId=([^&]+).*logNo=(\d+)/.exec(주소);
@@ -98,12 +153,15 @@ export async function 벤치마크가져오기(주소) {
 }
 
 export async function 원고쓰기({ 키, 벤치마크, 키워드, 사진수 = 5 }) {
+  const 조사결과 = await 공식자료조사({ 키, 키워드, 벤치마크 });
+  const 조사 = 조사결과.조사;
+  const 쓴돈 = 조사결과.사용량 ? [조사결과.사용량] : [];
   const 뼈대설명 = 벤치마크
     ? `아래 '벤치마크 구조' 는 참고할 글의 뼈대다. 섹션 순서와 표 · 사진 배치는 그대로 따르되, 문장은 전부 새로 써라.
 벤치마크 글의 문장을 기억하고 있더라도 절대 그대로 옮기지 마라. '문단요지' 는 어떤 내용을 다뤘는지 알기 위한 것이지 베낄 문장이 아니다. 제목도 새로 짓되 핵심 키워드는 유지한다.
-사실(제도 이름, 금액, 조건, 신청처)은 벤치마크에 나온 것만 쓴다. 없는 수치는 만들지 않는다.`
+사실(제도 이름, 금액, 조건, 신청처)은 아래 공식 조사에서 확인된 것만 쓴다. 없는 수치는 만들지 않는다.`
     : `주제 키워드: "${키워드}". 이 키워드로 검색해 들어온 독자가 궁금해할 것을 순서대로 푼다.
-소제목 5~6개, 그중 하나에 표 1개. 확실하지 않은 금액·날짜·기관명은 쓰지 말고 "주소지 관할 기관에 확인" 처럼 안내한다.`;
+소제목은 정확히 5개, 필요한 경우에만 비교 표 1개를 넣는다. 확인된 공식 사실은 아래 조사 결과 안에서만 쓴다.`;
   const 후킹규칙 = `
 [가장 중요: 첫 문단(후킹)]
 - 첫 문단은 딱 3줄. 이 3줄이 글의 성패를 가른다.
@@ -116,33 +174,37 @@ ${벤치마크 && 벤치마크.도입부_후킹참고 && 벤치마크.도입부_
 ${뼈대설명}
 ${후킹규칙}
 
+사실·문체 규칙
+- 아래 '공식 조사'의 확인된사실만 금액·기간·연령·소득·서류·기관명처럼 단정적인 사실로 쓴다. 없는 수치·날짜·조건은 절대 만들지 않는다.
+- 검증필요 항목은 최신 기준 확인이 필요하다고 분명히 밝히되, '문의하세요'만 반복하지 말고 확인할 공식 경로와 확인 기준을 함께 쓴다.
+- 독자가 제목에서 기대하는 핵심질문 5개에 각각 답한다. 전국 공통 제도와 지역별 사업을 혼동하지 않는다.
+- "제가 신청했다", "조사해 봤다"처럼 실제 경험을 꾸며 쓰지 않는다. "자세히 살펴보면", "처음에는 …로 알기 쉽습니다", "놓치기 쉬운 부분은" 같은 1인칭·친근한 표현은 도입·핵심·마무리에만 자연스럽게 쓴다.
+- 도입부·본문·결론을 같은 말로 반복하지 않는다. 각 문단에는 새 사실, 절차, 예외, 주의사항 중 적어도 하나를 담는다.
+
 블록 규칙
 - 문단: 3~4줄, 한 줄은 40~60자. 줄 사이 빈 줄("") 을 넣어 호흡을 준다.
 - 분량이 가장 자주 모자란다. 각 소제목 아래에는 문단 블록을 반드시 2개 이상 둔다 (대상·조건·방법·주의·예시를 구체적으로). 첫 후킹 문단 뒤에도 도입 문단을 1개 더 둔다.
-- 단락(섹션) 제목은 반드시 '소제목' 블록으로 넣는다 (검색 노출에 소제목이 유리하다). 벤치마크의 '섹션순서_인용구제목' 은 제목의 순서·내용만 참고하고, 블록 종류는 소제목으로 바꾼다. 소제목은 5~7개, 각 15자 안팎, 키워드가 자연스럽게 들어가게.
+- 단락(섹션) 제목은 반드시 '소제목' 블록으로 넣는다. 정확히 5개이며, 각 제목은 반드시 '[소제목] '으로 시작한다. 벤치마크의 '섹션순서_인용구제목' 은 제목의 순서·내용만 참고하고, 블록 종류는 소제목으로 바꾼다.
 - '인용구' 블록은 강조용이다. 글 전체에서 2~3개만, 본문 중간에서 독자가 꼭 기억해야 할 한 문장(핵심 결론·주의·행동)을 넣는다. 소제목 자리에 인용구를 쓰지 않는다.
-- 표는 정확히 9칸(3열×3행): 첫 줄은 열 이름, 그 다음 두 줄은 대표 사례 2개.
+- 비교할 공식 정보가 있을 때만 표는 정확히 9칸(3열×3행)으로 넣는다. 첫 줄은 열 이름, 그 다음 두 줄은 대표 사례 2개이며, 수치와 조건은 확인된사실만 쓴다.
 - 사진은 총 ${사진수}장. 각 사진의 '프롬프트' 는 그 섹션의 메시지를 상징하는 장면을 영어로 1~2문장 묘사한다. 원문 문장을 그리지 않는다.
   사물·장소·상황·분위기만 쓴다. 간판·문서·서류·화면·책·표지판·현수막·포스터처럼 글자가 들어갈 만한 것은 넣지 않는다. 한국어 단어·제도 이름·숫자는 쓰지 않는다.
   사람을 그릴 때는 "seen from behind or in profile, face not visible" 를 넣는다. 화풍·글자 금지 규칙은 프로그램이 붙이므로 쓰지 않는다.
 - 사진 블록은 소제목 바로 아래 첫 문단 다음에 하나씩 둔다. 글 끝에 몰아 넣지 않는다.
+- FAQ는 마지막 소제목 아래에 질문·답 3~5개로 넣고, 신청 실수·예외·중복 수급·서류·심사 지연을 우선 다룬다. 확인 가능한 경우에는 마지막 문단에 실행 가능한 체크리스트를 넣되 FAQ와 같은 말을 반복하지 않는다.
+- 결론은 핵심 조건, 놓치기 쉬운 주의, 지금 확인할 사항, 공식 신청 경로만 짧게 정리한다.
 - 구분선은 마지막 문단 앞에 한 번.
 - 전체 문단 글자 수(띄어쓰기 빼고)는 1,800~2,600자. 1,800자보다 짧으면 실패다.`;
 
-  const 입력 = 벤치마크 ? `벤치마크 구조:\n${JSON.stringify(벤치마크, null, 1)}` : `주제 키워드: ${키워드}`;
+  const 입력 = `${벤치마크 ? `벤치마크 구조:\n${JSON.stringify(벤치마크, null, 1)}\n\n` : ""}공식 조사:\n${JSON.stringify(조사, null, 1)}`;
   const j = await 오픈AI(키, "/responses", {
     model: 글모델,
     input: [{ role: "developer", content: 지시 }, { role: "user", content: 입력 }],
     text: { format: { type: "json_schema", name: "naver_post", schema: 원고형식, strict: true } },
     reasoning: { effort: "low" },
   });
-  const 꺼내기 = (응답) => {
-    const 본문 = (응답.output || []).flatMap((o) => o.content || []).find((c) => c.type === "output_text");
-    if (!본문) throw new Error("글 모델이 본문을 안 돌려줌: " + JSON.stringify(응답).slice(0, 300));
-    return JSON.parse(본문.text);
-  };
-  const 쓴돈 = [{ model: 글모델, input_tokens: j.usage?.input_tokens || 0, output_tokens: j.usage?.output_tokens || 0 }];
-  let 원고 = 꺼내기(j);
+  쓴돈.push({ model: 글모델, input_tokens: j.usage?.input_tokens || 0, output_tokens: j.usage?.output_tokens || 0 });
+  let 원고 = 응답JSON(j);
   // 분량 보충 — 싼 모델은 글을 짧게 쓰는 버릇이 있다 (2026-09-23 실측 704자). 모자라면 한 번 늘려 쓰게 한다. 수강생에게는 알리지 않는다.
   const 글자수 = (w) => (w.블록 || []).filter((b) => b.종류 === "문단").flatMap((b) => b.글 || []).join("").replace(/\s/g, "").length;
   if (글자수(원고) < 1800) {
@@ -158,7 +220,31 @@ ${후킹규칙}
       reasoning: { effort: "low" },
     });
     쓴돈.push({ model: 글모델, input_tokens: j2.usage?.input_tokens || 0, output_tokens: j2.usage?.output_tokens || 0 });
-    try { const 늘린 = 꺼내기(j2); if (글자수(늘린) > 글자수(원고)) 원고 = 늘린; } catch {}
+    try { const 늘린 = 응답JSON(j2); if (글자수(늘린) > 글자수(원고)) 원고 = 늘린; } catch {}
+  }
+  // 초안 뒤에 한 번 더 검사·수정한다. 이 단계는 새 사실을 찾는 단계가 아니므로
+  // 위 조사 밖의 숫자나 제도명을 추가하지 못하게 한다.
+  try {
+    const 검수 = await 오픈AI(키, "/responses", {
+      model: 글모델,
+      input: [{ role: "developer", content: `${지시}\n\n최종 검수: 제목 약속, 핵심질문 5개, 공식 근거, 중복, 5개 소제목, 표·FAQ·체크리스트의 실용성을 검사하고 문제가 있으면 고쳐라. 조사 밖의 사실을 새로 넣지 마라.` }, { role: "user", content: `공식 조사:\n${JSON.stringify(조사, null, 1)}\n\n초안:\n${JSON.stringify(원고)}` }],
+      text: { format: { type: "json_schema", name: "reviewed_naver_post", schema: 원고형식, strict: true } },
+      reasoning: { effort: "low" },
+    });
+    쓴돈.push({ model: 글모델, input_tokens: 검수.usage?.input_tokens || 0, output_tokens: 검수.usage?.output_tokens || 0 });
+    원고 = 응답JSON(검수);
+  } catch {}
+  const 문제 = 품질문제(원고);
+  if (문제.length) {
+    try {
+      const 보정 = await 오픈AI(키, "/responses", {
+        model: 글모델,
+        input: [{ role: "developer", content: `${지시}\n\n형식 오류만 고쳐라. 새 사실을 추가하지 마라.` }, { role: "user", content: `오류: ${문제.join(", ")}\n\n공식 조사:\n${JSON.stringify(조사, null, 1)}\n\n원고:\n${JSON.stringify(원고)}` }],
+        text: { format: { type: "json_schema", name: "repaired_naver_post", schema: 원고형식, strict: true } }, reasoning: { effort: "low" },
+      });
+      쓴돈.push({ model: 글모델, input_tokens: 보정.usage?.input_tokens || 0, output_tokens: 보정.usage?.output_tokens || 0 });
+      원고 = 응답JSON(보정);
+    } catch {}
   }
   // 사진 자리 채우기 — 싼 모델이 사진 블록을 통째로 빼먹을 때가 있다 (2026-09-23 실측: 33블록 중 사진 0).
   // 모자란 만큼 소제목에 맞는 영어 장면 묘사를 따로 받아, 소제목 사이에 고르게 넣는다. 수강생에게는 알리지 않는다.
@@ -176,7 +262,7 @@ ${후킹규칙}
         reasoning: { effort: "low" },
       });
       쓴돈.push({ model: 글모델, input_tokens: j3.usage?.input_tokens || 0, output_tokens: j3.usage?.output_tokens || 0 });
-      장면들 = 꺼내기(j3).scenes || [];
+      장면들 = 응답JSON(j3).scenes || [];
     } catch {}
     // 뒤에서부터 넣어야 앞 위치가 안 밀린다. 소제목 바로 다음 문단 뒤에 넣는다.
     const 넣을곳 = 고른.map((x, k) => {
@@ -188,6 +274,7 @@ ${후킹규칙}
   }
   원고.블록 = 사진고르게(원고.블록 || []);
   Object.defineProperty(원고, "_사용량", { value: 쓴돈, enumerable: false });
+  Object.defineProperty(원고, "_조사", { value: 조사, enumerable: false });
   return 원고;
 }
 
@@ -299,7 +386,7 @@ export async function 만들기({ 키, 벤치마크, 벤치마크URL, 키워드,
   }).filter(Boolean);
 
   const 원고경로 = path.join(폴더, "원고.json");
-  await writeFile(원고경로, JSON.stringify({ 제목: 원고.제목, 키워드: 키워드 || 핵심, 만든날: 날짜, 벤치마크: 벤치마크URL || null, 블록 }, null, 2), "utf8");
+  await writeFile(원고경로, JSON.stringify({ 제목: 원고.제목, 키워드: 키워드 || 핵심, 만든날: 날짜, 벤치마크: 벤치마크URL || null, 공식조사: 원고._조사 || null, 블록 }, null, 2), "utf8");
   // 사람이 읽기 편한 사본도 같이 둔다
   const 읽기용 = [`# ${원고.제목}`, ""].concat(블록.map((b) => b.종류 === "문단" ? b.글.join("\n") : b.종류 === "소제목" ? `\n## ${b.글}` : b.종류 === "인용구" ? `> ${b.글}` : b.종류 === "표" ? "[표] " + b.칸.join(" | ") : b.종류 === "사진" ? `[사진] ${b.파일}` : "---")).join("\n\n");
   await writeFile(path.join(폴더, "원고.md"), 읽기용, "utf8");
@@ -307,3 +394,4 @@ export async function 만들기({ 키, 벤치마크, 벤치마크URL, 키워드,
   const 사진실패 = 기록.filter((r) => /^사진\d/.test(r.단계) && r.실패).map((r) => r.실패);
   return { 제목: 원고.제목, 폴더, 원고: 원고경로, 사진수: 블록.filter((b) => b.종류 === "사진").length, 사진실패, 사용량, 기록 };
 }
+

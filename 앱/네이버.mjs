@@ -182,7 +182,7 @@ export async function 글만들기(옵션 = {}) {
   if (!옵션.작업폴더) throw new Error("작업폴더 가 필요합니다");
   return 잠금으로({작업폴더: 옵션.작업폴더, 이름: "네이버-글", 일: () => 글만들기본체(옵션)});
 }
-async function 글만들기본체({작업폴더, 키워드 = "", 벤치마크URL = "", 사진수 = 3} = {}) {
+async function 글만들기본체({작업폴더, 키워드 = "", 벤치마크URL = "", 사진수 = 5} = {}) {
   const 설정 = await 설정읽기(작업폴더);
   if (!String(설정.openai키 || "").startsWith("sk-")) return {결과: "설정 필요", 빠진: ["OpenAI 키"]};
   if (!키워드 && !벤치마크URL) return {결과: "키워드 필요"};
@@ -252,7 +252,9 @@ async function 쓰기본체({agent, 작업폴더, 원고, 시작블록 = 0} = {}
       return {결과: "이어서", 원고, 시작블록: 0, 다시쓰는중: true, 걸린시간초: r.걸린시간초, 진단: [...빠진이유, ...문제.map((m) => `점검: ${m}`)]};
     }
     globalThis.__메킷다시쓰기 = null;
-    try { await writeFile(join(dirname(원고), "결과.json"), JSON.stringify({임시저장: true, 때: new Date().toISOString(), 사진빠짐, 빠진블록, 점검문제: 문제}, null, 2), "utf8"); } catch {}
+    const V5문제 = 문제.filter((x) => /사진이 6장|태그가 모두|검증된 내부링크|내부링크가 클릭/.test(String(x)));
+    try { await writeFile(join(dirname(원고), "결과.json"), JSON.stringify({임시저장: true, V5완료: V5문제.length === 0, 때: new Date().toISOString(), 사진빠짐, 빠진블록, 점검문제: 문제}, null, 2), "utf8"); } catch {}
+    if (V5문제.length) return {결과: "미완료", 걸린시간초: r.걸린시간초, 사진빠짐, 빠진블록, 확인할곳: 문제, 진단: [...빠진이유, ...V5문제]};
     return {결과: "됨", 걸린시간초: r.걸린시간초, 사진빠짐, 빠진블록, 확인할곳: 문제, 진단: 빠진이유};
   }
   const 실패 = [...기록].reverse().find((x) => x.실패 || x.단계 === "오류") || {};

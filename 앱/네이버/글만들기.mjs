@@ -11,12 +11,13 @@
 //     최종 그림 프롬프트는 이 파일의 최종그림프롬프트() 가 만든다. 글 모델에게 맡기지 않는다.
 //   · process 전역을 쓰지 않는다 (Codex REPL 에서도 돌아야 한다).
 
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { inflateSync, deflateSync } from "node:zlib";
 
 // 고칠 때마다 올린다 (앱/배포.sh 가 커밋에 고정해 배포한다).
-export const 버전 = "2026-10-16a";
+export const 버전 = "2026-10-27a";
 
 const 여기 = path.dirname(fileURLToPath(import.meta.url));
 const 프로젝트 = path.resolve(여기, "..");
@@ -302,6 +303,50 @@ export function 사진고르게(블록들) {
   return 결과;
 }
 
+// V5 완료 조건은 원고를 만든 시점과 네이버에 넣은 뒤 모두 확인한다.
+// 내부링크는 실제 공개 글을 찾은 경우에만 통과로 처리한다.
+export function V5구성점검(원고) {
+  const 블록 = 원고?.블록 || [];
+  const 썸네일 = 블록.some((b) => b.종류 === "썸네일" && b.파일 && b.비율 === "1:1" && b.글자전용 === true);
+  const 본문사진 = 블록.filter((b) => b.종류 === "사진" && b.역할 === "본문" && b.파일 && b.비율 === "16:9").length;
+  const 태그블록 = 블록.find((b) => b.종류 === "태그");
+  const 태그수 = Array.isArray(태그블록?.태그) ? 태그블록.태그.length : 0;
+  const 내부링크 = 블록.some((b) => b.종류 === "내부링크" && b.검증됨 === true && /^https:\/\/blog\.naver\.com\//.test(String(b.URL || "")));
+  const 누락 = [];
+  if (!썸네일) 누락.push("1:1 글자 썸네일");
+  if (본문사진 !== 5) 누락.push("본문 16:9 이미지 5장");
+  if (태그수 < 10 || 태그수 > 15) 누락.push("태그 10~15개");
+  if (!내부링크) 누락.push("검증된 내부링크");
+  return { 통과: 누락.length === 0, 누락 };
+}
+
+function XML안전문자(글) {
+  return String(글 || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// 이미지 모델의 한글 글씨는 틀릴 수 있어, 썸네일은 모델에 맡기지 않고 SVG로 만든다.
+// 네이버 업로드가 SVG를 허용하지 않으면 typing 단계가 실패로 기록해 완료 처리하지 않는다.
+export function 글자썸네일SVG(제목) {
+  const 낱말 = String(제목 || "").trim().split(/\s+/).filter(Boolean);
+  const 줄 = [];
+  let 현재 = "";
+  for (const 낱말하나 of 낱말) {
+    if ((현재 + " " + 낱말하나).trim().length > 12 && 현재) { 줄.push(현재); 현재 = 낱말하나; }
+    else 현재 = (현재 + " " + 낱말하나).trim();
+  }
+  if (현재) 줄.push(현재);
+  const 보여줄줄 = (줄.length ? 줄 : ["새 글"]).slice(0, 3);
+  const 시작 = 470 - ((보여줄줄.length - 1) * 85) / 2;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080"><rect width="1080" height="1080" fill="#ffffff"/><rect x="54" y="54" width="972" height="972" rx="32" fill="#ffffff" stroke="#111111" stroke-width="10"/>${보여줄줄.map((x, i) => `<text x="540" y="${시작 + i * 100}" text-anchor="middle" font-family="Noto Sans KR, Malgun Gothic, sans-serif" font-size="76" font-weight="800" fill="#111111">${XML안전문자(x)}</text>`).join("")}</svg>`;
+}
+
+function 태그만들기(키워드, 제목) {
+  const 후보 = `${키워드 || ""} ${제목 || ""}`.match(/[가-힣A-Za-z0-9]{2,}/g) || [];
+  const 기본 = ["정보", "정리", "신청방법", "지원대상", "생활정보", "정책정보", "확인사항", "혜택", "조건", "준비서류", "유의사항", "최신정보"];
+  const 고유 = [...new Set([...후보, ...기본].map((x) => `#${String(x).replace(/[^가-힣A-Za-z0-9]/g, "")}`).filter((x) => x.length > 1))];
+  return 고유.slice(0, 12);
+}
+
 // 최종 그림 프롬프트 — 어떤 언어의 글자도 나오지 않게 프로그램이 직접 만든다.
 // 한글이 프롬프트에 있으면 모델이 그 글자를 그림에 그려 넣으므로 장면 묘사에서 한글·따옴표 안 문구를 지운다.
 export function 최종그림프롬프트(장면) {
@@ -318,17 +363,49 @@ export function 최종그림프롬프트(장면) {
   ].join("\n");
 }
 
-export async function 그림그리기({ 키, 프롬프트, 저장경로 }) {
+function CRC32(바이트) {
+  let c = 0xffffffff;
+  for (const b of 바이트) { c ^= b; for (let i = 0; i < 8; i += 1) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); }
+  return (c ^ 0xffffffff) >>> 0;
+}
+function PNG청크(종류, 데이터) {
+  const 이름 = Buffer.from(종류, "ascii"), 길이 = Buffer.alloc(4), 합 = Buffer.concat([이름, 데이터]), CRC = Buffer.alloc(4);
+  길이.writeUInt32BE(데이터.length); CRC.writeUInt32BE(CRC32(합));
+  return Buffer.concat([길이, 합, CRC]);
+}
+// gpt-image PNG(RGBA 8비트, 비인터레이스)만 중앙에서 잘라 16:9로 만든다.
+// 다른 PNG 형식이면 억지로 통과시키지 않고 실패를 남긴다.
+export async function PNG를16대9로자르기(저장경로) {
+  const 파일 = await readFile(저장경로);
+  if (!파일.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("16:9 자르기: PNG 파일이 아닙니다");
+  let p = 8, IHDR, IDAT = [];
+  while (p < 파일.length) { const 길이 = 파일.readUInt32BE(p); const 종류 = 파일.subarray(p + 4, p + 8).toString("ascii"); const 데이터 = 파일.subarray(p + 8, p + 8 + 길이); p += 12 + 길이; if (종류 === "IHDR") IHDR = Buffer.from(데이터); if (종류 === "IDAT") IDAT.push(데이터); if (종류 === "IEND") break; }
+  const 너비 = IHDR?.readUInt32BE(0), 높이 = IHDR?.readUInt32BE(4), 비트 = IHDR?.[8], 색 = IHDR?.[9], 인터레이스 = IHDR?.[12];
+  if (!IHDR || 비트 !== 8 || 색 !== 6 || 인터레이스 !== 0) throw new Error("16:9 자르기: 지원하지 않는 PNG 형식입니다");
+  const 한줄 = 너비 * 4, 압축해제 = inflateSync(Buffer.concat(IDAT)), 원본 = Buffer.alloc(너비 * 높이 * 4);
+  let 입력 = 0;
+  for (let y = 0; y < 높이; y += 1) {
+    const 필터 = 압축해제[입력++], 행 = 압축해제.subarray(입력, 입력 + 한줄), 대상 = 원본.subarray(y * 한줄, (y + 1) * 한줄); 입력 += 한줄;
+    for (let x = 0; x < 한줄; x += 1) { const 왼쪽 = x >= 4 ? 대상[x - 4] : 0, 위 = y ? 원본[(y - 1) * 한줄 + x] : 0, 좌상 = y && x >= 4 ? 원본[(y - 1) * 한줄 + x - 4] : 0; if (필터 === 0) 대상[x] = 행[x]; else if (필터 === 1) 대상[x] = (행[x] + 왼쪽) & 255; else if (필터 === 2) 대상[x] = (행[x] + 위) & 255; else if (필터 === 3) 대상[x] = (행[x] + Math.floor((왼쪽 + 위) / 2)) & 255; else if (필터 === 4) { const q = 왼쪽 + 위 - 좌상, pa = Math.abs(q - 왼쪽), pb = Math.abs(q - 위), pc = Math.abs(q - 좌상); 대상[x] = (행[x] + (pa <= pb && pa <= pc ? 왼쪽 : pb <= pc ? 위 : 좌상)) & 255; } else throw new Error("16:9 자르기: 알 수 없는 PNG 필터입니다"); }
+  }
+  const 새높이 = Math.floor(너비 * 9 / 16), 시작Y = Math.max(0, Math.floor((높이 - 새높이) / 2)), 행들 = Buffer.alloc((한줄 + 1) * 새높이);
+  for (let y = 0; y < 새높이; y += 1) { 행들[y * (한줄 + 1)] = 0; 원본.copy(행들, y * (한줄 + 1) + 1, (시작Y + y) * 한줄, (시작Y + y + 1) * 한줄); }
+  const 새IHDR = Buffer.from(IHDR); 새IHDR.writeUInt32BE(새높이, 4);
+  await writeFile(저장경로, Buffer.concat([파일.subarray(0, 8), PNG청크("IHDR", 새IHDR), PNG청크("IDAT", deflateSync(행들)), PNG청크("IEND", Buffer.alloc(0))]));
+}
+
+export async function 그림그리기({ 키, 프롬프트, 저장경로, 비율 = "16:9" }) {
   const j = await 오픈AI(키, "/images/generations", {
     model: 그림모델,
     prompt: 최종그림프롬프트(프롬프트),
-    size: "1024x1024",
+    size: 비율 === "16:9" ? "1536x1024" : "1024x1024",
     quality: 그림화질,
     n: 1,
   });
   const b64 = j.data && j.data[0] && j.data[0].b64_json;
   if (!b64) throw new Error("그림 모델이 이미지를 안 돌려줌");
   await writeFile(저장경로, Buffer.from(b64, "base64"));
+  if (비율 === "16:9") await PNG를16대9로자르기(저장경로);
   return { 저장경로, 사용량: { model: 그림모델, input_tokens: j.usage?.input_tokens || 0, output_tokens: j.usage?.output_tokens || 0 } };
 }
 
@@ -346,7 +423,7 @@ export async function 만들기({ 키, 벤치마크, 벤치마크URL, 키워드,
   if (!벤치마크 && 벤치마크URL) {
     벤치마크 = await 벤치마크가져오기(벤치마크URL);
     기록.push({ 단계: "벤치마크", 원문제목: 벤치마크.원문제목, 섹션수: 벤치마크.섹션순서_인용구제목.length, 사진수: 벤치마크.사진수 });
-    if (!사진수) 사진수 = Math.min(6, Math.max(3, 벤치마크.사진수));
+    if (!사진수) 사진수 = 5;
   }
   const 원고 = await 원고쓰기({ 키, 벤치마크, 키워드, 사진수 });
   기록.push({ 단계: "글", 제목: 원고.제목, 블록수: 원고.블록.length });
@@ -359,15 +436,17 @@ export async function 만들기({ 키, 벤치마크, 벤치마크URL, 키워드,
 
   let n = 0;
   const 사용량 = [...(원고._사용량 || [])];
-  const 사진블록 = 원고.블록.filter((b) => b.종류 === "사진");
+  const 사진블록 = 원고.블록.filter((b) => b.종류 === "사진").slice(0, 5);
   // 그림은 동시에 만든다 (장당 30초~1분). 파일명에 키워드가 들어간다.
   await Promise.all(사진블록.map(async (b) => {
     const 번호 = ++n;
     const 파일 = `${핵심}-${번호}.png`;
     try {
-      const 그림 = await 그림그리기({ 키, 프롬프트: b.프롬프트, 저장경로: path.join(폴더, 파일) });
+      const 그림 = await 그림그리기({ 키, 프롬프트: b.프롬프트, 저장경로: path.join(폴더, 파일), 비율: "16:9" });
       사용량.push(그림.사용량);
       b.파일 = 파일;
+      b.역할 = "본문";
+      b.비율 = "16:9";
       기록.push({ 단계: `사진${번호}`, 파일, 프롬프트: b.프롬프트.slice(0, 60) });
     } catch (e) {
       b.파일 = null;
@@ -375,22 +454,28 @@ export async function 만들기({ 키, 벤치마크, 벤치마크URL, 키워드,
     }
   }));
 
+  const 썸네일파일 = `${핵심}-thumbnail.svg`;
+  await writeFile(path.join(폴더, 썸네일파일), 글자썸네일SVG(원고.제목), "utf8");
   // naver-typing.mjs 가 읽는 모양으로 정리
-  const 블록 = 원고.블록.map((b) => {
+  const 블록 = [
+    { 종류: "썸네일", 파일: 썸네일파일, 비율: "1:1", 글자전용: true },
+    ...원고.블록.map((b) => {
     if (b.종류 === "문단") return { 종류: "문단", 글: b.글 };
     if (b.종류 === "소제목" || b.종류 === "인용구") return { 종류: b.종류, 글: (b.글 || []).join(" ") };
     if (b.종류 === "표") return { 종류: "표", 칸: b.칸.slice(0, 9) };
     if (b.종류 === "구분선") return { 종류: "구분선" };
-    if (b.종류 === "사진") return b.파일 ? { 종류: "사진", 파일: b.파일 } : null;
+    if (b.종류 === "사진") return b.파일 ? { 종류: "사진", 역할: "본문", 파일: b.파일, 비율: "16:9" } : null;
     return null;
-  }).filter(Boolean);
+    }).filter(Boolean),
+    { 종류: "태그", 태그: 태그만들기(키워드, 원고.제목) },
+  ];
 
   const 원고경로 = path.join(폴더, "원고.json");
   await writeFile(원고경로, JSON.stringify({ 제목: 원고.제목, 키워드: 키워드 || 핵심, 만든날: 날짜, 벤치마크: 벤치마크URL || null, 공식조사: 원고._조사 || null, 블록 }, null, 2), "utf8");
   // 사람이 읽기 편한 사본도 같이 둔다
-  const 읽기용 = [`# ${원고.제목}`, ""].concat(블록.map((b) => b.종류 === "문단" ? b.글.join("\n") : b.종류 === "소제목" ? `\n## ${b.글}` : b.종류 === "인용구" ? `> ${b.글}` : b.종류 === "표" ? "[표] " + b.칸.join(" | ") : b.종류 === "사진" ? `[사진] ${b.파일}` : "---")).join("\n\n");
+  const 읽기용 = [`# ${원고.제목}`, ""].concat(블록.map((b) => b.종류 === "문단" ? b.글.join("\n") : b.종류 === "소제목" ? `\n## ${b.글}` : b.종류 === "인용구" ? `> ${b.글}` : b.종류 === "표" ? "[표] " + b.칸.join(" | ") : b.종류 === "사진" || b.종류 === "썸네일" ? `[${b.종류}] ${b.파일}` : b.종류 === "태그" ? b.태그.join(" ") : "---")).join("\n\n");
   await writeFile(path.join(폴더, "원고.md"), 읽기용, "utf8");
-  기록.push({ 단계: "저장", 폴더, 원고: 원고경로, 사진: 블록.filter((b) => b.종류 === "사진").map((b) => b.파일) });
+  기록.push({ 단계: "저장", 폴더, 원고: 원고경로, 사진: 블록.filter((b) => b.종류 === "사진").map((b) => b.파일), 썸네일: 썸네일파일, 태그수: 태그만들기(키워드, 원고.제목).length });
   const 사진실패 = 기록.filter((r) => /^사진\d/.test(r.단계) && r.실패).map((r) => r.실패);
   return { 제목: 원고.제목, 폴더, 원고: 원고경로, 사진수: 블록.filter((b) => b.종류 === "사진").length, 사진실패, 사용량, 기록 };
 }

@@ -25,7 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // 이 파일을 고칠 때마다 올린다 (앱/배포.sh 가 커밋에 고정해 배포한다).
-export const 버전 = "2026-09-28a";
+export const 버전 = "2026-10-27a";
 
 const 여기 = path.dirname(fileURLToPath(import.meta.url));
 // 수강생 데이터 폴더(원고·사진). 앱 판에서는 실행() 이 옵션.데이터폴더 로 바꾼다. 프로그램 폴더(임시)와 다르다.
@@ -126,6 +126,27 @@ function 사진경로(파일, 원고폴더) {
   const p = 후보.find((x) => existsSync(x));
   if (!p) throw new Error(`사진 파일이 없습니다: ${후보.join(" , ")}`);
   return p;
+}
+
+function HTML글자(글) { return String(글 || "").replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim(); }
+function 제목낱말(글) { return new Set((String(글 || "").match(/[가-힣A-Za-z0-9]{2,}/g) || []).map((x) => x.toLowerCase())); }
+// 공개 상태가 확인되고 제목 낱말이 겹치는 같은 블로그 글만 쓴다. 하나도 없으면 링크를 억지로 만들지 않는다.
+async function 같은블로그관련글찾기(tab, 제목) {
+  const 주소 = String(await Promise.resolve(tab.url()).catch(() => ""));
+  const blogId = new URL(주소).searchParams.get("blogId");
+  if (!blogId) return null;
+  const 낱말 = 제목낱말(제목);
+  const 목록URL = `https://blog.naver.com/PostList.naver?blogId=${encodeURIComponent(blogId)}&categoryNo=0&from=postList&query=${encodeURIComponent([...낱말].slice(0, 3).join(" "))}`;
+  let html = "";
+  try { const r = await fetch(목록URL, { signal: AbortSignal.timeout(15000) }); if (!r.ok) return null; html = await r.text(); } catch { return null; }
+  const 후보 = [...html.matchAll(/<a[^>]+href=["']([^"']*PostView\.naver\?[^"']*logNo=\d+[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi)].map((m) => ({ URL: new URL(m[1].replace(/&amp;/g, "&"), "https://blog.naver.com").href, 제목: HTML글자(m[2]) }));
+  for (const 후보글 of 후보) {
+    if (!후보글.URL.includes(`blogId=${encodeURIComponent(blogId)}`)) continue;
+    const 겹침 = [...제목낱말(후보글.제목)].filter((x) => 낱말.has(x)).length;
+    if (!겹침) continue;
+    try { const 확인 = await fetch(후보글.URL, { signal: AbortSignal.timeout(15000) }); if (확인.ok) return { ...후보글, 검증됨: true }; } catch {}
+  }
+  return null;
 }
 
 // ── 본체 ──────────────────────────────────────────────────────────
@@ -521,6 +542,17 @@ export async function 실행(옵션 = {}) {
       await 쉬기(400);
     }
 
+    // V5 내부링크: 현재 로그인한 같은 블로그의 공개 글만 자동으로 찾는다.
+    // 찾지 못하면 임의 링크는 넣지 않고, 마지막 점검에서 미충족으로 남긴다.
+    if (!이어쓰기 && !원고.블록.some((b) => b.종류 === "내부링크")) {
+      const 관련글 = await 같은블로그관련글찾기(tab, 원고.제목);
+      const 태그위치 = 원고.블록.findIndex((b) => b.종류 === "태그");
+      if (관련글) {
+        원고.블록.splice(태그위치 < 0 ? 원고.블록.length : 태그위치, 0, { 종류: "내부링크", ...관련글 });
+        적기("내부링크", { 찾음: true, 제목: 관련글.제목, URL: 관련글.URL });
+      } else 적기("내부링크", { 찾음: false, 이유: "관련 있는 같은 블로그 공개 글을 확인하지 못함" });
+    }
+
     // 6. 블록 순서대로 (시간 예산을 넘기면 임시저장하고 '이어서' 로 넘긴다 — REPL 한 번 실행에 시간 한도가 있다)
     let 이어서 = null;
     for (const [i, 블록] of (원고.블록 || []).entries()) {
@@ -620,7 +652,7 @@ export async function 실행(옵션 = {}) {
           const 후 = await 에디터상태();
           적기(이름, { 구분선수: 후.구분선 });
 
-        } else if (블록.종류 === "사진") {
+        } else if (블록.종류 === "사진" || 블록.종류 === "썸네일") {
           const 파일 = 사진경로(블록.파일, 원고폴더);
           const b = await 찾기(R.사진버튼);
           if (!b) throw new Error("사진 버튼 못 찾음");
@@ -646,6 +678,22 @@ export async function 실행(옵션 = {}) {
             await 키("Escape").catch(() => {});
             적기(이름, { 사진건너뜀: String(e?.message || e).slice(0, 100), 안내: "크롬 주소창에 chrome://extensions → ChatGPT 확장 '세부정보' → '파일 URL에 대한 액세스 허용' 을 켜고 다시 하면 사진이 들어갑니다" });
           }
+
+        } else if (블록.종류 === "내부링크") {
+          await 본문서식으로();
+          await 타이핑(`관련 글: ${블록.제목 || ""}`.trim());
+          await 키("Enter");
+          await 타이핑(블록.URL);
+          await 키("Enter");
+          await 쉬기(700);
+          적기(이름, { URL: 블록.URL, 검증됨: 블록.검증됨 === true });
+
+        } else if (블록.종류 === "태그") {
+          await 본문서식으로();
+          await 타이핑((블록.태그 || []).join(" "));
+          await 키("Enter");
+          await 쉬기(400);
+          적기(이름, { 태그수: (블록.태그 || []).length });
 
         } else {
           적기(이름, { 건너뜀: `모르는 종류: ${블록.종류}` });
@@ -679,7 +727,7 @@ export async function 실행(옵션 = {}) {
     // 8. 점검 — 원고와 네이버 화면을 대조한다 (2026-09-23 진현님 지시: 다 쓰고 잘못된 곳이 있는지 보고 고치기)
     try {
       const 사진확인 = !기록.some((r) => r.사진건너뜀);
-      const 요약 = { 제목: 원고.제목, 사진확인, 블록: (원고.블록 || []).map((b) => ({ 종류: b.종류, 글: b.글, 칸: b.칸 })) };
+      const 요약 = { 제목: 원고.제목, 사진확인, 블록: (원고.블록 || []).map((b) => ({ 종류: b.종류, 글: b.글, 칸: b.칸, 태그: b.태그, URL: b.URL, 비율: b.비율, 글자전용: b.글자전용 })) };
       const 결과 = await F.locator("body").first().evaluate((el, 원) => {
         const d = el.ownerDocument, 정 = (t) => String(t || "").replace(/\s+/g, ""), 줄 = (t) => [].concat(t || []).join(" ");
         const 문제 = [];
@@ -701,7 +749,12 @@ export async function 실행(옵션 = {}) {
           const 칸 = [...t.c.querySelectorAll("td")].map((td) => 정(td.innerText));
           if ((b.칸 || []).some((v, k) => 칸[k] !== 정(v))) 문제.push(`표 ${i + 1}개째 칸 내용이 원고와 달라요`);
         });
-        if (원.사진확인) { const 원사진 = 원.블록.filter((b) => b.종류 === "사진").length, 화면사진 = 부품.filter((p) => p.종류 === "image").length; if (화면사진 < 원사진) 문제.push(`사진이 ${원사진}장 중 ${화면사진}장만 들어갔어요`); }
+        if (원.사진확인) { const 원사진 = 원.블록.filter((b) => b.종류 === "사진" || b.종류 === "썸네일").length, 화면사진 = 부품.filter((p) => p.종류 === "image").length; if (화면사진 < 원사진) 문제.push(`사진이 ${원사진}장 중 ${화면사진}장만 들어갔어요`); }
+        const 태그 = 원.블록.find((b) => b.종류 === "태그");
+        if (태그 && !(태그.태그 || []).every((x) => 정(d.body.innerText).includes(정(x)))) 문제.push("태그가 모두 들어가지 않았어요");
+        const 링크 = 원.블록.find((b) => b.종류 === "내부링크" && b.URL);
+        if (!링크) 문제.push("검증된 내부링크를 찾지 못했어요");
+        else if (![...d.querySelectorAll("a[href]")].some((a) => String(a.href || "").includes(String(링크.URL).replace(/^https?:\/\//, "")))) 문제.push("내부링크가 클릭 가능한 링크로 들어가지 않았어요");
         return { 문제 };
       }, 요약);
       적기("점검", { 문제: 결과.문제 || [] });

@@ -335,8 +335,26 @@ function XML안전문자(글) {
   return String(글 || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// 이미지 모델의 한글 글씨는 틀릴 수 있어, 썸네일은 모델에 맡기지 않고 SVG로 만든다.
-// 네이버 업로드가 SVG를 허용하지 않으면 typing 단계가 실패로 기록해 완료 처리하지 않는다.
+export function 썸네일프롬프트(제목) {
+  return [
+    "Create a square 1:1 Korean Naver blog thumbnail as a standard raster PNG.",
+    `Use this Korean title verbatim and prominently: "${String(제목 || "새 글")}".`,
+    "Warm topic-relevant photo illustration, dark navy headline card, large bold yellow and white Korean type, high contrast for readers aged 50-60.",
+    "No SVG, no watermark, no logo, no extra text, no misspellings or gibberish.",
+  ].join("\n");
+}
+
+export async function 썸네일그리기({ 키, 제목, 저장경로 }) {
+  const j = await 오픈AI(키, "/images/generations", { model: 그림모델, prompt: 썸네일프롬프트(제목), size: "1024x1024", quality: 그림화질, n: 1 });
+  const b64 = j.data && j.data[0] && j.data[0].b64_json;
+  if (!b64) throw new Error("썸네일 이미지가 생성되지 않았습니다");
+  const 이미지 = Buffer.from(b64, "base64");
+  if (!이미지.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("썸네일이 PNG 형식이 아닙니다");
+  await writeFile(저장경로, 이미지);
+  return { 저장경로, 사용량: { model: 그림모델, input_tokens: j.usage?.input_tokens || 0, output_tokens: j.usage?.output_tokens || 0 } };
+}
+
+// 이전 SVG 함수는 기존 테스트·도구 호환을 위해 남기지만 실제 네이버 업로드에는 사용하지 않는다.
 export function 글자썸네일SVG(제목) {
   const 낱말 = String(제목 || "").trim().split(/\s+/).filter(Boolean);
   const 줄 = [];
@@ -416,8 +434,9 @@ export async function 그림그리기({ 키, 프롬프트, 저장경로, 비율 
   const b64 = j.data && j.data[0] && j.data[0].b64_json;
   if (!b64) throw new Error("그림 모델이 이미지를 안 돌려줌");
   await writeFile(저장경로, Buffer.from(b64, "base64"));
-  if (비율 === "16:9") await PNG를16대9로자르기(저장경로);
-  return { 저장경로, 사용량: { model: 그림모델, input_tokens: j.usage?.input_tokens || 0, output_tokens: j.usage?.output_tokens || 0 } };
+  let 잘림 = true;
+  if (비율 === "16:9") { try { await PNG를16대9로자르기(저장경로); } catch { 잘림 = false; } }
+  return { 저장경로, 잘림, 사용량: { model: 그림모델, input_tokens: j.usage?.input_tokens || 0, output_tokens: j.usage?.output_tokens || 0 } };
 }
 
 // 파일명에 넣을 키워드. 한글·영문·숫자만 남기고 띄어쓰기는 '-' 로. (네이버는 이미지 파일명도 본다)
@@ -465,11 +484,19 @@ export async function 만들기({ 키, 벤치마크, 벤치마크URL, 키워드,
     }
   }));
 
-  const 썸네일파일 = `${핵심}-thumbnail.svg`;
-  await writeFile(path.join(폴더, 썸네일파일), 글자썸네일SVG(원고.제목), "utf8");
+  let 썸네일파일 = null;
+  try {
+    썸네일파일 = `${핵심}-thumbnail.png`;
+    const 썸네일 = await 썸네일그리기({ 키, 제목: 원고.제목, 저장경로: path.join(폴더, 썸네일파일) });
+    사용량.push(썸네일.사용량);
+    기록.push({ 단계: "썸네일", 파일: 썸네일파일 });
+  } catch (e) {
+    썸네일파일 = null;
+    기록.push({ 단계: "썸네일", 실패: String(e?.message || e).slice(0, 120) });
+  }
   // naver-typing.mjs 가 읽는 모양으로 정리
   const 블록 = [
-    { 종류: "썸네일", 파일: 썸네일파일, 비율: "1:1", 글자전용: true },
+    ...(썸네일파일 ? [{ 종류: "썸네일", 파일: 썸네일파일, 비율: "1:1", 글자전용: true }] : []),
     ...원고.블록.map((b) => {
     if (b.종류 === "문단") return { 종류: "문단", 글: b.글 };
     if (b.종류 === "소제목" || b.종류 === "인용구") return { 종류: b.종류, 글: (b.글 || []).join(" ") };

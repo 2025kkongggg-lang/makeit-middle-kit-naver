@@ -107,6 +107,17 @@ async function 공식자료조사({ 키, 키워드, 벤치마크 }) {
   }
 }
 
+export function 소제목표식제거(원고) {
+  return {
+    ...원고,
+    블록: (원고?.블록 || []).map((b) => {
+      if (b?.종류 !== "소제목") return b;
+      const 지우기 = (글) => String(글 || "").replace(/^\s*\[소제목\]\s*/u, "");
+      return { ...b, 글: Array.isArray(b.글) ? b.글.map(지우기) : 지우기(b.글) };
+    }),
+  };
+}
+
 function 품질문제(원고) {
   const 블록 = 원고?.블록 || [];
   const 소제목 = 블록.filter((b) => b.종류 === "소제목");
@@ -115,7 +126,6 @@ function 품질문제(원고) {
   const 중복 = 정규화.some((x, i) => x.length > 35 && 정규화.indexOf(x) !== i);
   const 문제 = [];
   if (소제목.length !== 5) 문제.push("소제목이 정확히 5개가 아닙니다");
-  if (소제목.some((b) => !String((b.글 || [])[0] || "").startsWith("[소제목]"))) 문제.push("소제목 표시가 빠졌습니다");
   if (중복) 문제.push("같은 문장이 반복됩니다");
   return 문제;
 }
@@ -185,7 +195,7 @@ ${후킹규칙}
 블록 규칙
 - 문단: 3~4줄, 한 줄은 40~60자. 줄 사이 빈 줄("") 을 넣어 호흡을 준다.
 - 분량이 가장 자주 모자란다. 각 소제목 아래에는 문단 블록을 반드시 2개 이상 둔다 (대상·조건·방법·주의·예시를 구체적으로). 첫 후킹 문단 뒤에도 도입 문단을 1개 더 둔다.
-- 단락(섹션) 제목은 반드시 '소제목' 블록으로 넣는다. 정확히 5개이며, 각 제목은 반드시 '[소제목] '으로 시작한다. 벤치마크의 '섹션순서_인용구제목' 은 제목의 순서·내용만 참고하고, 블록 종류는 소제목으로 바꾼다.
+- 단락(섹션) 제목은 반드시 '소제목' 블록으로 넣는다. 정확히 5개이며, 제목 앞에 대괄호·라벨·표식을 붙이지 않는다. 벤치마크의 '섹션순서_인용구제목' 은 제목의 순서·내용만 참고하고, 블록 종류는 소제목으로 바꾼다.
 - '인용구' 블록은 강조용이다. 글 전체에서 2~3개만, 본문 중간에서 독자가 꼭 기억해야 할 한 문장(핵심 결론·주의·행동)을 넣는다. 소제목 자리에 인용구를 쓰지 않는다.
 - 비교할 공식 정보가 있을 때만 표는 정확히 9칸(3열×3행)으로 넣는다. 첫 줄은 열 이름, 그 다음 두 줄은 대표 사례 2개이며, 수치와 조건은 확인된사실만 쓴다.
 - 사진은 총 ${사진수}장. 각 사진의 '프롬프트' 는 그 섹션의 메시지를 상징하는 장면을 영어로 1~2문장 묘사한다. 원문 문장을 그리지 않는다.
@@ -247,6 +257,7 @@ ${후킹규칙}
       원고 = 응답JSON(보정);
     } catch {}
   }
+  원고 = 소제목표식제거(원고);
   // 사진 자리 채우기 — 싼 모델이 사진 블록을 통째로 빼먹을 때가 있다 (2026-09-23 실측: 33블록 중 사진 0).
   // 모자란 만큼 소제목에 맞는 영어 장면 묘사를 따로 받아, 소제목 사이에 고르게 넣는다. 수강생에게는 알리지 않는다.
   const 있는사진 = (원고.블록 || []).filter((b) => b.종류 === "사진").length;
@@ -307,13 +318,13 @@ export function 사진고르게(블록들) {
 // 내부링크는 실제 공개 글을 찾은 경우에만 통과로 처리한다.
 export function V5구성점검(원고) {
   const 블록 = 원고?.블록 || [];
-  const 썸네일 = 블록.some((b) => b.종류 === "썸네일" && b.파일 && /\.png$/i.test(String(b.파일)) && b.비율 === "1:1" && b.글자전용 === true);
+  const 썸네일 = 블록.some((b) => b.종류 === "썸네일" && b.파일 && b.비율 === "1:1" && b.글자전용 === true);
   const 본문사진 = 블록.filter((b) => b.종류 === "사진" && b.역할 === "본문" && b.파일 && b.비율 === "16:9").length;
   const 태그블록 = 블록.find((b) => b.종류 === "태그");
   const 태그수 = Array.isArray(태그블록?.태그) ? 태그블록.태그.length : 0;
   const 내부링크 = 블록.some((b) => b.종류 === "내부링크" && b.검증됨 === true && /^https:\/\/blog\.naver\.com\//.test(String(b.URL || "")));
   const 누락 = [];
-  if (!썸네일) 누락.push("1:1 PNG 썸네일");
+  if (!썸네일) 누락.push("1:1 글자 썸네일");
   if (본문사진 !== 5) 누락.push("본문 16:9 이미지 5장");
   if (태그수 < 10 || 태그수 > 15) 누락.push("태그 10~15개");
   if (!내부링크) 누락.push("검증된 내부링크");
@@ -338,31 +349,6 @@ export function 글자썸네일SVG(제목) {
   const 보여줄줄 = (줄.length ? 줄 : ["새 글"]).slice(0, 3);
   const 시작 = 470 - ((보여줄줄.length - 1) * 85) / 2;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080"><rect width="1080" height="1080" fill="#ffffff"/><rect x="54" y="54" width="972" height="972" rx="32" fill="#ffffff" stroke="#111111" stroke-width="10"/>${보여줄줄.map((x, i) => `<text x="540" y="${시작 + i * 100}" text-anchor="middle" font-family="Noto Sans KR, Malgun Gothic, sans-serif" font-size="76" font-weight="800" fill="#111111">${XML안전문자(x)}</text>`).join("")}</svg>`;
-}
-
-export function 썸네일템플릿고르기() {
-  return Math.random() < 0.5 ? "photo-info" : "bold-card";
-}
-
-export function 최종썸네일프롬프트(제목, 템플릿 = 썸네일템플릿고르기()) {
-  const 공통 = [
-    "Create a square 1080x1080 Korean Naver blog thumbnail as a raster PNG image.",
-    `Use this Korean title verbatim and prominently: "${String(제목 || "새 글")}".`,
-    "Make the Korean title large, highly legible, and central. No watermark, no logo, no SVG, no vector file.",
-  ];
-  if (템플릿 === "photo-info") return [...공통, "Template: topic-relevant warm photo or photorealistic illustration background, dark navy headline banner, yellow and white high-contrast Korean type, 2-4 compact rounded information boxes with simple icons. Designed for Korean adults aged 50-60."].join("\n");
-  return [...공통, "Template: bold typography card, clean white or light pastel background, oversized navy and red Korean headline, strong yellow highlight brush stroke, one simple friendly policy-benefit icon. Minimal, high contrast, instantly readable."].join("\n");
-}
-
-export async function 썸네일그리기({ 키, 제목, 저장경로 }) {
-  const 템플릿 = 썸네일템플릿고르기();
-  const j = await 오픈AI(키, "/images/generations", { model: 그림모델, prompt: 최종썸네일프롬프트(제목, 템플릿), size: "1024x1024", quality: 그림화질, n: 1 });
-  const b64 = j.data?.[0]?.b64_json;
-  if (!b64) throw new Error("썸네일 이미지가 생성되지 않았습니다");
-  const 이미지 = Buffer.from(b64, "base64");
-  if (!이미지.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error("썸네일이 PNG 형식이 아닙니다");
-  await writeFile(저장경로, 이미지);
-  return { 저장경로, 템플릿, 사용량: { model: 그림모델, input_tokens: j.usage?.input_tokens || 0, output_tokens: j.usage?.output_tokens || 0 } };
 }
 
 function 태그만들기(키워드, 제목) {
@@ -479,19 +465,11 @@ export async function 만들기({ 키, 벤치마크, 벤치마크URL, 키워드,
     }
   }));
 
-  let 썸네일블록 = null;
-  try {
-    const 썸네일파일 = `${핵심}-thumbnail.png`;
-    const 썸네일 = await 썸네일그리기({ 키, 제목: 원고.제목, 저장경로: path.join(폴더, 썸네일파일) });
-    사용량.push(썸네일.사용량);
-    썸네일블록 = { 종류: "썸네일", 파일: 썸네일파일, 비율: "1:1", 글자전용: true, 템플릿: 썸네일.템플릿 };
-    기록.push({ 단계: "썸네일", 파일: 썸네일파일, 템플릿: 썸네일.템플릿 });
-  } catch (e) {
-    기록.push({ 단계: "썸네일", 실패: String(e?.message || e).slice(0, 120) });
-  }
+  const 썸네일파일 = `${핵심}-thumbnail.svg`;
+  await writeFile(path.join(폴더, 썸네일파일), 글자썸네일SVG(원고.제목), "utf8");
   // naver-typing.mjs 가 읽는 모양으로 정리
   const 블록 = [
-    ...(썸네일블록 ? [썸네일블록] : []),
+    { 종류: "썸네일", 파일: 썸네일파일, 비율: "1:1", 글자전용: true },
     ...원고.블록.map((b) => {
     if (b.종류 === "문단") return { 종류: "문단", 글: b.글 };
     if (b.종류 === "소제목" || b.종류 === "인용구") return { 종류: b.종류, 글: (b.글 || []).join(" ") };
@@ -508,7 +486,7 @@ export async function 만들기({ 키, 벤치마크, 벤치마크URL, 키워드,
   // 사람이 읽기 편한 사본도 같이 둔다
   const 읽기용 = [`# ${원고.제목}`, ""].concat(블록.map((b) => b.종류 === "문단" ? b.글.join("\n") : b.종류 === "소제목" ? `\n## ${b.글}` : b.종류 === "인용구" ? `> ${b.글}` : b.종류 === "표" ? "[표] " + b.칸.join(" | ") : b.종류 === "사진" || b.종류 === "썸네일" ? `[${b.종류}] ${b.파일}` : b.종류 === "태그" ? b.태그.join(" ") : "---")).join("\n\n");
   await writeFile(path.join(폴더, "원고.md"), 읽기용, "utf8");
-  기록.push({ 단계: "저장", 폴더, 원고: 원고경로, 사진: 블록.filter((b) => b.종류 === "사진").map((b) => b.파일), 썸네일: 썸네일블록?.파일 || null, 태그수: 태그만들기(키워드, 원고.제목).length });
+  기록.push({ 단계: "저장", 폴더, 원고: 원고경로, 사진: 블록.filter((b) => b.종류 === "사진").map((b) => b.파일), 썸네일: 썸네일파일, 태그수: 태그만들기(키워드, 원고.제목).length });
   const 사진실패 = 기록.filter((r) => /^사진\d/.test(r.단계) && r.실패).map((r) => r.실패);
   return { 제목: 원고.제목, 폴더, 원고: 원고경로, 사진수: 블록.filter((b) => b.종류 === "사진").length, 사진실패, 사용량, 기록 };
 }

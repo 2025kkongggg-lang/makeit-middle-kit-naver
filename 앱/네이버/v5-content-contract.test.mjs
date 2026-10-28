@@ -4,39 +4,44 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { deflateSync } from "node:zlib";
-import { V5구성점검, 썸네일템플릿고르기, 최종썸네일프롬프트, PNG를16대9로자르기 } from "./글만들기.mjs";
+import { V5구성점검, 글자썸네일SVG, PNG를16대9로자르기, 소제목표식제거 } from "./글만들기.mjs";
+import { 임시저장완료문제 } from "../네이버.mjs";
 
 const 태그 = Array.from({ length: 10 }, (_, i) => `#태그${i + 1}`);
 const 사진 = Array.from({ length: 5 }, (_, i) => ({ 종류: "사진", 역할: "본문", 파일: `body-${i + 1}.png`, 비율: "16:9" }));
 
-test("V5 원고는 PNG 썸네일, 본문 이미지 5장, 태그와 검증된 내부링크를 모두 갖춰야 한다", () => {
-  const 점검 = V5구성점검({ 블록: [
-    { 종류: "썸네일", 파일: "thumbnail.png", 비율: "1:1", 글자전용: true },
-    ...사진, { 종류: "내부링크", URL: "https://blog.naver.com/example/123", 검증됨: true }, { 종류: "태그", 태그 },
-  ] });
+test("V5 원고는 1:1 글자 썸네일, 본문 이미지 5장, 태그와 검증된 내부링크를 모두 갖춰야 한다", () => {
+  const 점검 = V5구성점검({
+    블록: [
+      { 종류: "썸네일", 파일: "thumbnail.svg", 비율: "1:1", 글자전용: true },
+      ...사진,
+      { 종류: "내부링크", URL: "https://blog.naver.com/example/123", 검증됨: true },
+      { 종류: "태그", 태그 },
+    ],
+  });
   assert.deepEqual(점검, { 통과: true, 누락: [] });
-});
-
-test("SVG 썸네일은 V5 완료로 처리하지 않는다", () => {
-  const 점검 = V5구성점검({ 블록: [{ 종류: "썸네일", 파일: "thumbnail.svg", 비율: "1:1", 글자전용: true }, ...사진, { 종류: "내부링크", URL: "https://blog.naver.com/example/123", 검증됨: true }, { 종류: "태그", 태그 }] });
-  assert.equal(점검.통과, false);
-  assert.deepEqual(점검.누락, ["1:1 PNG 썸네일"]);
-});
-
-test("썸네일은 사진형 또는 카드형 중 하나를 고르고 제목을 프롬프트에 포함한다", () => {
-  const 선택 = new Set(Array.from({ length: 50 }, () => 썸네일템플릿고르기()));
-  assert.deepEqual([...선택].sort(), ["bold-card", "photo-info"]);
-  for (const 템플릿 of 선택) {
-    const 프롬프트 = 최종썸네일프롬프트("국민연금 수령액 계산", 템플릿);
-    assert.match(프롬프트, /국민연금 수령액 계산/);
-    assert.match(프롬프트, /PNG/i);
-  }
 });
 
 test("예전 3장 사진 원고는 V5 완료로 처리하지 않는다", () => {
   const 점검 = V5구성점검({ 블록: 사진.slice(0, 3) });
   assert.equal(점검.통과, false);
-  assert.deepEqual(점검.누락, ["1:1 PNG 썸네일", "본문 16:9 이미지 5장", "태그 10~15개", "검증된 내부링크"]);
+  assert.deepEqual(점검.누락, ["1:1 글자 썸네일", "본문 16:9 이미지 5장", "태그 10~15개", "검증된 내부링크"]);
+});
+
+test("소제목에 붙은 내부 표식은 네이버에 쓰기 전에 제거한다", () => {
+  const 원고 = 소제목표식제거({ 블록: [{ 종류: "소제목", 글: "[소제목] 신청 방법과 준비 서류" }] });
+  assert.equal(원고.블록[0].글, "신청 방법과 준비 서류");
+});
+
+test("내부링크가 없더라도 글 본문 임시저장은 완료로 처리한다", () => {
+  assert.deepEqual(임시저장완료문제(["검증된 내부링크를 찾지 못했어요"]), []);
+});
+
+test("썸네일은 1:1 SVG 안에 제목 글자만 넣는다", () => {
+  const svg = 글자썸네일SVG("장수축하금 지원대상 쉽게 확인하기");
+  assert.match(svg, /width="1080" height="1080"/);
+  assert.match(svg, /장수축하금/);
+  assert.doesNotMatch(svg, /<image\b/i);
 });
 
 function crc32(bytes) { let c = 0xffffffff; for (const b of bytes) { c ^= b; for (let i = 0; i < 8; i += 1) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); } return (c ^ 0xffffffff) >>> 0; }

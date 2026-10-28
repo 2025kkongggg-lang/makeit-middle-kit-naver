@@ -479,11 +479,19 @@ export async function 만들기({ 키, 벤치마크, 벤치마크URL, 키워드,
     }
   }));
 
-  const 썸네일파일 = `${핵심}-thumbnail.svg`;
-  await writeFile(path.join(폴더, 썸네일파일), 글자썸네일SVG(원고.제목), "utf8");
+  let 썸네일블록 = null;
+  try {
+    const 썸네일파일 = `${핵심}-thumbnail.png`;
+    const 썸네일 = await 썸네일그리기({ 키, 제목: 원고.제목, 저장경로: path.join(폴더, 썸네일파일) });
+    사용량.push(썸네일.사용량);
+    썸네일블록 = { 종류: "썸네일", 파일: 썸네일파일, 비율: "1:1", 글자전용: true, 템플릿: 썸네일.템플릿 };
+    기록.push({ 단계: "썸네일", 파일: 썸네일파일, 템플릿: 썸네일.템플릿 });
+  } catch (e) {
+    기록.push({ 단계: "썸네일", 실패: String(e?.message || e).slice(0, 120) });
+  }
   // naver-typing.mjs 가 읽는 모양으로 정리
   const 블록 = [
-    { 종류: "썸네일", 파일: 썸네일파일, 비율: "1:1", 글자전용: true },
+    ...(썸네일블록 ? [썸네일블록] : []),
     ...원고.블록.map((b) => {
     if (b.종류 === "문단") return { 종류: "문단", 글: b.글 };
     if (b.종류 === "소제목" || b.종류 === "인용구") return { 종류: b.종류, 글: (b.글 || []).join(" ") };

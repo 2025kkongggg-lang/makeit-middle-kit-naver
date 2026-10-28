@@ -252,7 +252,7 @@ async function 쓰기본체({agent, 작업폴더, 원고, 시작블록 = 0} = {}
       return {결과: "이어서", 원고, 시작블록: 0, 다시쓰는중: true, 걸린시간초: r.걸린시간초, 진단: [...빠진이유, ...문제.map((m) => `점검: ${m}`)]};
     }
     globalThis.__메킷다시쓰기 = null;
-    const V5문제 = 문제.filter((x) => /사진이 6장|태그가 모두|검증된 내부링크|내부링크가 클릭/.test(String(x)));
+    const V5문제 = 임시저장완료문제(문제);
     try { await writeFile(join(dirname(원고), "결과.json"), JSON.stringify({임시저장: true, V5완료: V5문제.length === 0, 때: new Date().toISOString(), 사진빠짐, 빠진블록, 점검문제: 문제}, null, 2), "utf8"); } catch {}
     if (V5문제.length) return {결과: "미완료", 걸린시간초: r.걸린시간초, 사진빠짐, 빠진블록, 확인할곳: 문제, 진단: [...빠진이유, ...V5문제]};
     return {결과: "됨", 걸린시간초: r.걸린시간초, 사진빠짐, 빠진블록, 확인할곳: 문제, 진단: 빠진이유};
@@ -261,6 +261,10 @@ async function 쓰기본체({agent, 작업폴더, 원고, 시작블록 = 0} = {}
   const 문구 = String(실패.실패 || 실패.내용 || r.결과 || "");
   // 진단: 마지막 기록 몇 줄 (대본은 JSON 을 수강생에게 보여 주지 않는다). 전체 기록은 원고 폴더의 기록.jsonl.
   return {결과: "멈춤", 단계: 실패.단계 || "", 할일: 처방또는프로그램(문구, {단계: 실패.단계}), 진단: 기록.slice(-4)};
+}
+
+export function 임시저장완료문제(문제 = []) {
+  return 문제.filter((x) => /사진이 6장|태그가 모두/.test(String(x)));
 }
 
 // "진단해줘" — 네이버 쪽 상태와 할 일.

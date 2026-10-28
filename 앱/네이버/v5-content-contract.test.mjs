@@ -6,6 +6,7 @@ import path from "node:path";
 import { deflateSync } from "node:zlib";
 import { V5구성점검, 글자썸네일SVG, PNG를16대9로자르기, 소제목표식제거 } from "./글만들기.mjs";
 import { 임시저장완료문제 } from "../네이버.mjs";
+import { 링크단축키, 링크제목선택키 } from "./naver-typing.mjs";
 
 const 태그 = Array.from({ length: 10 }, (_, i) => `#태그${i + 1}`);
 const 사진 = Array.from({ length: 5 }, (_, i) => ({ 종류: "사진", 역할: "본문", 파일: `body-${i + 1}.png`, 비율: "16:9" }));
@@ -35,6 +36,13 @@ test("소제목에 붙은 내부 표식은 네이버에 쓰기 전에 제거한�
 
 test("내부링크가 없더라도 글 본문 임시저장은 완료로 처리한다", () => {
   assert.deepEqual(임시저장완료문제(["검증된 내부링크를 찾지 못했어요"]), []);
+});
+
+test("윈도우 네이버 편집기에서는 Ctrl+K로 내부링크를 만든다", () => {
+  assert.equal(링크단축키("Win32"), "ctrl+k");
+  assert.equal(링크단축키("MacIntel"), "super+k");
+  assert.equal(링크제목선택키("Win32"), "shift+home");
+  assert.equal(링크제목선택키("MacIntel"), "super+shift+arrowleft");
 });
 
 test("썸네일은 1:1 SVG 안에 제목 글자만 넣는다", () => {

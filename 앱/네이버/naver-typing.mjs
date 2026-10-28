@@ -130,22 +130,31 @@ function 사진경로(파일, 원고폴더) {
 
 function HTML글자(글) { return String(글 || "").replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim(); }
 function 제목낱말(글) { return new Set((String(글 || "").match(/[가-힣A-Za-z0-9]{2,}/g) || []).map((x) => x.toLowerCase())); }
-// 공개 상태가 확인되고 제목 낱말이 겹치는 같은 블로그 글만 쓴다. 하나도 없으면 링크를 억지로 만들지 않는다.
+export function 링크단축키(플랫폼 = "") { return /Mac/i.test(String(플랫폼)) ? "super+k" : "ctrl+k"; }
+export function 링크제목선택키(플랫폼 = "") { return /Mac/i.test(String(플랫폼)) ? "super+shift+arrowleft" : "shift+home"; }
+// 먼저 제목 낱말이 겹치는 공개 글을 찾고, 없으면 같은 블로그의 최신 공개 글을 연결한다.
 async function 같은블로그관련글찾기(tab, 제목) {
   const 주소 = String(await Promise.resolve(tab.url()).catch(() => ""));
   const blogId = new URL(주소).searchParams.get("blogId");
   if (!blogId) return null;
   const 낱말 = 제목낱말(제목);
-  const 목록URL = `https://blog.naver.com/PostList.naver?blogId=${encodeURIComponent(blogId)}&categoryNo=0&from=postList&query=${encodeURIComponent([...낱말].slice(0, 3).join(" "))}`;
-  let html = "";
-  try { const r = await fetch(목록URL, { signal: AbortSignal.timeout(15000) }); if (!r.ok) return null; html = await r.text(); } catch { return null; }
-  const 후보 = [...html.matchAll(/<a[^>]+href=["']([^"']*PostView\.naver\?[^"']*logNo=\d+[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi)].map((m) => ({ URL: new URL(m[1].replace(/&amp;/g, "&"), "https://blog.naver.com").href, 제목: HTML글자(m[2]) }));
-  for (const 후보글 of 후보) {
-    if (!후보글.URL.includes(`blogId=${encodeURIComponent(blogId)}`)) continue;
-    const 겹침 = [...제목낱말(후보글.제목)].filter((x) => 낱말.has(x)).length;
-    if (!겹침) continue;
-    try { const 확인 = await fetch(후보글.URL, { signal: AbortSignal.timeout(15000) }); if (확인.ok) return { ...후보글, 검증됨: true }; } catch {}
-  }
+  const 후보가져오기 = async (query = "") => {
+    const 목록URL = `https://blog.naver.com/PostList.naver?blogId=${encodeURIComponent(blogId)}&categoryNo=0&from=postList&query=${encodeURIComponent(query)}`;
+    try { const r = await fetch(목록URL, { signal: AbortSignal.timeout(15000) }); if (!r.ok) return []; const html = await r.text(); return [...html.matchAll(/<a[^>]+href=["']([^"']*PostView\.naver\?[^"']*logNo=\d+[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi)].map((m) => ({ URL: new URL(m[1].replace(/&amp;/g, "&"), "https://blog.naver.com").href, 제목: HTML글자(m[2]) })); } catch { return []; }
+  };
+  const 검증하기 = async (후보) => {
+    for (const 후보글 of 후보) {
+      if (!후보글.URL.includes(`blogId=${encodeURIComponent(blogId)}`)) continue;
+      try { const 확인 = await fetch(후보글.URL, { signal: AbortSignal.timeout(15000) }); if (확인.ok) return { ...후보글, 검증됨: true }; } catch {}
+    }
+    return null;
+  };
+  const 검색후보 = await 후보가져오기([...낱말].slice(0, 3).join(" "));
+  const 관련 = 검색후보.filter((후보글) => [...제목낱말(후보글.제목)].some((x) => 낱말.has(x)));
+  const 관련글 = await 검증하기(관련);
+  if (관련글) return 관련글;
+  const 최신글 = await 검증하기(await 후보가져오기());
+  if (최신글) return 최신글;
   return null;
 }
 
@@ -682,11 +691,17 @@ export async function 실행(옵션 = {}) {
         } else if (블록.종류 === "내부링크") {
           await 본문서식으로();
           await 타이핑(`관련 글: ${블록.제목 || ""}`.trim());
-          await 키("Enter");
+          await 쉬기(300);
+          const 플랫폼 = await pw.evaluate(() => navigator.platform).catch(() => "");
+          await 키(링크제목선택키(플랫폼));
+          await 쉬기(200);
+          await 키(링크단축키(플랫폼));
+          await 쉬기(600);
           await 타이핑(블록.URL);
           await 키("Enter");
           await 쉬기(700);
-          적기(이름, { URL: 블록.URL, 검증됨: 블록.검증됨 === true });
+          await 키("Enter");
+          적기(이름, { URL: 블록.URL, 검증됨: 블록.검증됨 === true, 방법: "제목 선택 후 링크 단축키" });
 
         } else if (블록.종류 === "태그") {
           await 본문서식으로();

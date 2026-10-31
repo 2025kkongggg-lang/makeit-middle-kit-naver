@@ -17,6 +17,7 @@
     "99_절대_건들지마세요_프로그램파일/scripts/create-env-local.mjs",
     "99_절대_건들지마세요_프로그램파일/scripts/doctor.mjs",
     "99_절대_건들지마세요_프로그램파일/scripts/keys.mjs",
+    "99_절대_건들지마세요_프로그램파일/scripts/lib/article-images.mjs",
     "99_절대_건들지마세요_프로그램파일/scripts/lib/env.mjs",
     "99_절대_건들지마세요_프로그램파일/scripts/lib/paste.mjs",
     "99_절대_건들지마세요_프로그램파일/scripts/lib/sites.mjs",
@@ -34,4 +35,3 @@
     "앱/승인글.mjs"
   ]
 }
-

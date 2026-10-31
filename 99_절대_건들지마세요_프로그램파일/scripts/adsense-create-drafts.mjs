@@ -8,6 +8,7 @@ import {readTitleEntries, resolveTitleFile} from "./title-files.mjs";
 import {keysGuideMessage, requireLicense} from "./lib/env.mjs";
 import {wpFetch} from "./lib/wp.mjs";
 import {돈줄, 예산상태, 원장기록, 진행표시, 천단위, 퍼센트, 퍼센트문구} from "./lib/usage.mjs";
+import {applyArticleImages, buildRolePrompt, contentHasMedia, prepareArticleImages} from "./lib/article-images.mjs";
 
 const programRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 // 앱 판은 MAKEIT_PROJECT_ROOT 로 수강생 작업 폴더를 넘긴다 (lib/env.mjs 와 같은 규칙)
@@ -1170,22 +1171,7 @@ function estimateImageCostUsd({model, quality, size}) {
   return table[model]?.[quality]?.[size] || 0;
 }
 
-function buildImagePrompt({title, meta}) {
-  // 2026-09-21 진현님 지시: 대표이미지·본문 이미지에 어떤 언어의 글자도 넣지 않는다.
-  // 그래서 한글 제목·키워드는 프롬프트에 아예 넣지 않는다 (한글이 있으면 모델이 그 글자를 그려 넣는다). 장면은 영어 묘사(imageScene)만 쓴다.
-  const topic = String(meta.slug || "").replace(/-/g, " ").trim();
-  const scene = meta.imageScene || `A calm, realistic editorial scene that visually represents the topic "${topic}", shown through objects, places and everyday situations only`;
-  return [
-    "Create one original editorial thumbnail image for a blog article.",
-    `Scene: ${scene}`,
-    "Style: clean, trustworthy, calm educational mood, realistic lighting, simple uncluttered background, one strong focal point.",
-    "Composition: landscape 3:2 featured image, main subject centered, clean margins on all sides, clearly readable as a small thumbnail.",
-    "STRICT RULE - NO TEXT AT ALL: the image must contain absolutely no text of any kind in any language or script. No Korean, no English, no numbers, no letters, no words, no signs, no labels, no captions, no subtitles, no watermarks, no logos, no UI text, no writing on paper, screens, boards, packaging, clothing or walls. If the scene would naturally include a sign, screen, document, book or label, render it blank, blurred or turned away so that nothing readable appears anywhere.",
-    "Also do not include real person faces, copyrighted characters, fake official documents, brand marks, medical, legal or financial claims, before-and-after imagery, or clickbait elements.",
-  ].join("\n");
-}
-
-async function generateFeaturedImage({apiKey, title, meta, usdKrw}) {
+async function generateImage({apiKey, role, title, meta, usdKrw, prompt}) {
   const imageModel = env.IMAGE_MODEL || DEFAULT_IMAGE_MODEL;
   const imageQuality = env.IMAGE_QUALITY || DEFAULT_IMAGE_QUALITY;
   const imageSize = env.IMAGE_SIZE || DEFAULT_IMAGE_SIZE;
@@ -1199,7 +1185,7 @@ async function generateFeaturedImage({apiKey, title, meta, usdKrw}) {
     },
     body: JSON.stringify({
       model: imageModel,
-      prompt: buildImagePrompt({title, meta}),
+      prompt: prompt || buildRolePrompt({role, meta}),
       n: 1,
       size: imageSize,
       quality: imageQuality,
@@ -1217,7 +1203,7 @@ async function generateFeaturedImage({apiKey, title, meta, usdKrw}) {
 
   if (!response.ok) {
     const message = data.error?.message || body.slice(0, 300);
-    throw new Error(`OpenAI 대표이미지 생성 실패: ${message}`);
+    throw new Error(`OpenAI ${role === "featured" ? "대표" : "본문"}이미지 생성 실패: ${message}`);
   }
 
   const imageItem = data.data?.[0] || {};
@@ -1254,15 +1240,22 @@ async function generateFeaturedImage({apiKey, title, meta, usdKrw}) {
   };
 }
 
-async function uploadFeaturedImage({siteUrl, username, appPassword, title, meta, generatedImage}) {
+async function uploadImage({siteUrl, username, appPassword, role, title, meta, generatedImage, filename}) {
   const credentials = wordpressCredentials(username, appPassword);
   const mediaUrl = `${wordpressBaseUrl(siteUrl)}/wp-json/wp/v2/media`;
+  const label = role === "featured" ? "대표이미지" : "본문 이미지";
+  const altText = role === "featured"
+    ? meta.featuredImageAlt
+    : `${meta.focusKeyword}의 핵심 내용을 설명하는 본문 이미지`.slice(0, 120);
+  const caption = role === "featured"
+    ? meta.featuredImageCaption
+    : `${meta.focusKeyword}의 실행 과정과 확인할 점을 시각적으로 정리한 이미지입니다.`.slice(0, 140);
   const uploadResponse = await wpFetch(mediaUrl, {
     method: "POST",
     headers: {
       Authorization: `Basic ${credentials}`,
       "Content-Type": generatedImage.mimeType,
-      "Content-Disposition": `attachment; filename="${meta.slug}.${generatedImage.extension}"`,
+      "Content-Disposition": `attachment; filename="${filename}"`,
       Accept: "application/json",
     },
     body: generatedImage.buffer,
@@ -1273,15 +1266,15 @@ async function uploadFeaturedImage({siteUrl, username, appPassword, title, meta,
   try {
     uploadData = JSON.parse(uploadBody);
   } catch {
-    throw new Error(`대표이미지 업로드 응답을 해석하지 못함: ${uploadBody.slice(0, 200)}`);
+    throw new Error(`${label} 업로드 응답을 해석하지 못함: ${uploadBody.slice(0, 200)}`);
   }
   if (!uploadResponse.ok) {
     const message = uploadData.message || uploadBody.slice(0, 300);
-    throw new Error(`대표이미지 업로드 실패: ${message}`);
+    throw new Error(`${label} 업로드 실패: ${message}`);
   }
 
   const mediaId = Number(uploadData.id);
-  if (!mediaId) throw new Error("대표이미지 업로드 후 미디어 ID를 받지 못함");
+  if (!mediaId) throw new Error(`${label} 업로드 후 미디어 ID를 받지 못함`);
 
   const updateResponse = await wpFetch(`${mediaUrl}/${mediaId}`, {
     method: "POST",
@@ -1291,10 +1284,10 @@ async function uploadFeaturedImage({siteUrl, username, appPassword, title, meta,
       Accept: "application/json",
     },
     body: JSON.stringify({
-      title: `${title} 대표이미지`,
-      alt_text: meta.featuredImageAlt,
-      caption: meta.featuredImageCaption,
-      description: meta.featuredImageCaption,
+      title: `${title} ${label}`,
+      alt_text: altText,
+      caption,
+      description: caption,
     }),
   });
 
@@ -1310,62 +1303,24 @@ async function uploadFeaturedImage({siteUrl, username, appPassword, title, meta,
 
   if (!updateResponse.ok) {
     const message = updateData.message || updateBody.slice(0, 300);
-    throw new Error(`대표이미지 정보 저장 실패: ${message}`);
+    throw new Error(`${label} 정보 저장 실패: ${message}`);
   }
 
-  if (normalizeSpaces(updateData.alt_text || "") !== normalizeSpaces(meta.featuredImageAlt)) {
-    throw new Error("대표이미지 alt 텍스트 저장 확인 실패");
+  if (normalizeSpaces(updateData.alt_text || "") !== normalizeSpaces(altText)) {
+    throw new Error(`${label} alt 텍스트 저장 확인 실패`);
   }
 
   const sourceUrl = normalizeSpaces(updateData.source_url || uploadData.source_url || updateData.guid?.rendered || uploadData.guid?.rendered || "");
   if (!sourceUrl) {
-    throw new Error("대표이미지 URL을 받지 못해 본문 이미지 블록을 만들 수 없음");
+    throw new Error(`${label} URL을 받지 못함`);
   }
 
   return {
     id: mediaId,
     sourceUrl,
-    altText: meta.featuredImageAlt,
-    caption: meta.featuredImageCaption,
+    altText,
+    caption,
   };
-}
-
-function buildArticleImageBlock({media}) {
-  const caption = normalizeSpaces(media.caption);
-  const escapedCaption = escapeHtml(caption);
-  const escapedAlt = escapeHtml(media.altText);
-  const escapedSrc = escapeHtml(media.sourceUrl);
-
-  return [
-    `<!-- wp:image {"id":${media.id},"sizeSlug":"large","linkDestination":"none","className":"makeit-adsense-inline-featured-image"} -->`,
-    `<figure class="wp-block-image size-large makeit-adsense-inline-featured-image"><img src="${escapedSrc}" alt="${escapedAlt}" class="wp-image-${media.id}">${caption ? `<figcaption class="wp-element-caption">${escapedCaption}</figcaption>` : ""}</figure>`,
-    "<!-- /wp:image -->",
-  ].join("\n");
-}
-
-function insertImageBlockIntoArticle(html, imageBlock) {
-  const blocks = String(html || "")
-    .trim()
-    .split(/\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean);
-
-  if (blocks.length === 0) return imageBlock;
-  const insertIndex = blocks.length <= 4 ? Math.min(2, blocks.length) : Math.min(Math.max(3, Math.floor(blocks.length / 2)), blocks.length - 1);
-  blocks.splice(insertIndex, 0, imageBlock);
-  return blocks.join("\n\n").trim();
-}
-
-function validateInlineImageBlock(html, media) {
-  if (!html.includes(`<!-- wp:image {"id":${media.id},`)) {
-    throw new Error("본문 이미지 블록 삽입 확인 실패");
-  }
-  if (!html.includes(`wp-image-${media.id}`)) {
-    throw new Error("본문 이미지 미디어 ID 연결 확인 실패");
-  }
-  if (!html.includes(`alt="${escapeHtml(media.altText)}"`)) {
-    throw new Error("본문 이미지 alt 텍스트 삽입 확인 실패");
-  }
 }
 
 function postContentText(post) {
@@ -1374,11 +1329,6 @@ function postContentText(post) {
   if (typeof content?.raw === "string") return content.raw;
   if (typeof content?.rendered === "string") return content.rendered;
   return "";
-}
-
-function postHasInlineImage(post, media) {
-  const content = postContentText(post);
-  return content.includes(`wp-image-${media.id}`) || content.includes(`"id":${media.id}`);
 }
 
 async function generateArticle({apiKey, model, title, minChars, 키워드 = ""}) {
@@ -1844,12 +1794,35 @@ for (let index = 0; index < titles.length; index += 1) {
       selectedCategory = selectBestCategory(wordpressCategories, {title, meta});
     }
     단계(index + 1, titles.length, "그림 만드는 중 (20~40초)");
-    const generatedImage = await generateFeaturedImage({apiKey: env.OPENAI_API_KEY, title, meta, usdKrw});
+    const imageResult = await prepareArticleImages({
+      title,
+      meta,
+      usdKrw,
+      generate: ({role, prompt}) => generateImage({apiKey: env.OPENAI_API_KEY, role, title, meta, usdKrw, prompt}),
+      upload: ({role, generatedImage, filename}) => uploadImage({
+        siteUrl,
+        username,
+        appPassword,
+        role,
+        title,
+        meta,
+        generatedImage,
+        filename,
+      }),
+    });
+    for (const failure of imageResult.failures) {
+      console.log(`     (${failure.role === "featured" ? "대표" : "본문"}이미지는 넣지 못했어요: ${failure.message})`);
+    }
     단계(index + 1, titles.length, "워드프레스에 올리는 중");
-    const featuredMedia = await uploadFeaturedImage({siteUrl, username, appPassword, title, meta, generatedImage});
-    const htmlWithImage = insertImageBlockIntoArticle(html, buildArticleImageBlock({media: featuredMedia}));
+    const appliedImages = applyArticleImages({html, featured: imageResult.featured, body: imageResult.body});
+    const htmlWithImage = appliedImages.html;
     validateArticleHtml(htmlWithImage, title);
-    validateInlineImageBlock(htmlWithImage, featuredMedia);
+    if (imageResult.featured && contentHasMedia(htmlWithImage, imageResult.featured.id)) {
+      throw new Error("대표이미지가 본문에 들어갔습니다.");
+    }
+    if (imageResult.body && !contentHasMedia(htmlWithImage, imageResult.body.id)) {
+      throw new Error("본문 이미지 블록 삽입 확인 실패");
+    }
     const localPath = join(outputDir, `${String(index + 1).padStart(3, "0")}_${safeFilename(title)}.html`);
     const visiblePath = join(visibleOutputDir, `${String(index + 1).padStart(3, "0")}_${safeFilename(title)}.html`);
     writeFileSync(localPath, htmlWithImage, "utf8");
@@ -1857,12 +1830,19 @@ for (let index = 0; index < titles.length; index += 1) {
 
     const postDate = postDateForIndex(index + dateOffset, dateMode, startDate, {randomDays, fixedTime, stepDays, hourGap, perDay, minGapHours, 피할시각들: 잡힌시각들});
     if (postDate) 잡힌시각들.push(Date.parse(postDate)); // 이번 실행에서 잡은 시각도 다음 글이 피하게
-    let post = await createDraftPost({siteUrl, username, appPassword, title, html: htmlWithImage, date: postDate, meta, featuredMediaId: featuredMedia.id, selectedCategory});
-    if (!postHasInlineImage(post, featuredMedia)) {
-      post = await updateDraftPostContent({siteUrl, username, appPassword, postId: post.id, html: htmlWithImage, featuredMediaId: featuredMedia.id, selectedCategory});
+    let post = await createDraftPost({siteUrl, username, appPassword, title, html: htmlWithImage, date: postDate, meta, featuredMediaId: appliedImages.featuredMediaId, selectedCategory});
+    let postContentImageVerified = !imageResult.body || contentHasMedia(postContentText(post), imageResult.body.id);
+    if (imageResult.body && !postContentImageVerified) {
+      try {
+        post = await updateDraftPostContent({siteUrl, username, appPassword, postId: post.id, html: htmlWithImage, featuredMediaId: appliedImages.featuredMediaId, selectedCategory});
+        postContentImageVerified = contentHasMedia(postContentText(post), imageResult.body.id);
+      } catch (error) {
+        imageResult.failures.push({role: "body", stage: "verify", message: error instanceof Error ? error.message : String(error)});
+      }
     }
-    if (!postHasInlineImage(post, featuredMedia)) {
-      throw new Error("워드프레스 임시글 본문에 이미지 블록이 저장되지 않았습니다.");
+    if (imageResult.body && !postContentImageVerified) {
+      imageResult.failures.push({role: "body", stage: "verify", message: "워드프레스 본문에서 이미지 블록을 확인하지 못함"});
+      console.log("     (본문 이미지는 워드프레스 저장 결과에서 확인하지 못했지만 글은 임시저장했어요)");
     }
 
     // 랭크매스 포커스 키워드. 없는 사이트면 조용히 건너뛰되, 화면에는 왜 안 됐는지 남긴다.
@@ -1873,8 +1853,8 @@ for (let index = 0; index < titles.length; index += 1) {
     }
 
     const textCost = estimateCost({model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, usdKrw});
-    const estimatedUsd = Number((textCost.estimatedUsd + generatedImage.estimatedUsd).toFixed(6));
-    const estimatedKrw = Number((textCost.estimatedKrw + generatedImage.estimatedKrw).toFixed(1));
+    const estimatedUsd = Number((textCost.estimatedUsd + imageResult.estimatedUsd).toFixed(6));
+    const estimatedKrw = Number((textCost.estimatedKrw + imageResult.estimatedKrw).toFixed(1));
     results.push({
       site,
       title,
@@ -1885,13 +1865,18 @@ for (let index = 0; index < titles.length; index += 1) {
       slug: post.slug || meta.slug,
       focusKeyword: meta.focusKeyword,
       featuredImageAlt: meta.featuredImageAlt,
-      featuredMediaId: featuredMedia.id,
-      featuredImageUrl: featuredMedia.sourceUrl,
-      inlineImageInserted: true,
-      inlineImageMediaId: featuredMedia.id,
-      postContentImageVerified: true,
-      inlineImageAlt: featuredMedia.altText,
-      inlineImageCaption: featuredMedia.caption,
+      featuredImageInserted: Boolean(imageResult.featured),
+      featuredMediaId: imageResult.featured?.id || 0,
+      featuredImageUrl: imageResult.featured?.sourceUrl || "",
+      bodyImageInserted: Boolean(imageResult.body),
+      bodyImageMediaId: imageResult.body?.id || 0,
+      bodyImageUrl: imageResult.body?.sourceUrl || "",
+      inlineImageInserted: Boolean(imageResult.body),
+      inlineImageMediaId: imageResult.body?.id || 0,
+      postContentImageVerified,
+      inlineImageAlt: imageResult.body?.altText || "",
+      inlineImageCaption: imageResult.body?.caption || "",
+      imageFailures: imageResult.failures,
       mappedParentCategory: titleEntry.parentCategory || "",
       mappedChildCategory: titleEntry.childCategory || "",
       mappedChildCategoryDescription: titleEntry.childCategoryDescription || "",
@@ -1901,10 +1886,10 @@ for (let index = 0; index < titles.length; index += 1) {
       categoryName: selectedCategory?.name || "",
       categoryScore: selectedCategory?.score ?? null,
       categorySelectionSource: selectedCategory?.source || "none",
-      imageModel: generatedImage.imageModel,
-      imageQuality: generatedImage.imageQuality,
-      imageSize: generatedImage.imageSize,
-      imageOutputFormat: generatedImage.imageOutputFormat,
+      imageModel: env.IMAGE_MODEL || DEFAULT_IMAGE_MODEL,
+      imageQuality: env.IMAGE_QUALITY || DEFAULT_IMAGE_QUALITY,
+      imageSize: env.IMAGE_SIZE || DEFAULT_IMAGE_SIZE,
+      imageOutputFormat: env.IMAGE_OUTPUT_FORMAT || DEFAULT_IMAGE_OUTPUT_FORMAT,
       editLink: post.link || "",
       localPath,
       visiblePath,
@@ -1914,8 +1899,8 @@ for (let index = 0; index < titles.length; index += 1) {
       total_tokens: usage.totalTokens,
       text_estimated_usd: textCost.estimatedUsd,
       text_estimated_krw: textCost.estimatedKrw,
-      image_estimated_usd: generatedImage.estimatedUsd,
-      image_estimated_krw: generatedImage.estimatedKrw,
+      image_estimated_usd: imageResult.estimatedUsd,
+      image_estimated_krw: imageResult.estimatedKrw,
       estimated_usd: estimatedUsd,
       estimated_krw: estimatedKrw,
     });

@@ -146,3 +146,14 @@ export async function prepareArticleImages({generate, upload, title, meta = {}, 
   result.estimatedKrw = Number(result.estimatedKrw.toFixed(1));
   return result;
 }
+
+export function applyArticleImages({html, featured = null, body = null}) {
+  const original = String(html || "").trim();
+  const nextHtml = body ? insertBodyImage(original, buildBodyImageBlock({media: body})) : original;
+  return {
+    html: nextHtml,
+    featuredMediaId: Number(featured?.id || 0),
+    bodyMediaId: Number(body?.id || 0),
+    bodyImageInserted: Boolean(body),
+  };
+}

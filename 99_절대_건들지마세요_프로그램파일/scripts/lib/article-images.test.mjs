@@ -6,6 +6,7 @@ import {
   buildBodyImageBlock,
   insertBodyImage,
   contentHasMedia,
+  verifyStoredImages,
 } from "./article-images.mjs";
 
 const meta = {
@@ -48,4 +49,28 @@ test("본문 이미지 블록은 본문 중간에 한 번 삽입되고 미디어
   assert.equal((result.match(/wp-image-42/g) || []).length, 1);
   assert.equal(contentHasMedia(result, 99), false);
   assert.match(result, /makeit-adsense-body-image/);
+});
+
+test("미디어 ID는 부분 문자열이 아니라 정확한 숫자로 비교한다", () => {
+  const html = '<figure><img class="wp-image-123"></figure><!-- wp:image {"id":123} -->';
+  assert.equal(contentHasMedia(html, 12), false);
+  assert.equal(contentHasMedia(html, 123), true);
+});
+
+test("최종 워드프레스 응답을 기준으로 이미지 저장 성공 여부를 판단한다", () => {
+  const missing = verifyStoredImages({
+    content: "<p>이미지가 제거된 본문</p>",
+    featuredMediaId: 0,
+    expectedFeaturedId: 101,
+    expectedBodyId: 202,
+  });
+  assert.deepEqual(missing, {featuredImageInserted: false, bodyImageInserted: false});
+
+  const stored = verifyStoredImages({
+    content: '<figure><img class="wp-image-202"></figure>',
+    featuredMediaId: 101,
+    expectedFeaturedId: 101,
+    expectedBodyId: 202,
+  });
+  assert.deepEqual(stored, {featuredImageInserted: true, bodyImageInserted: true});
 });

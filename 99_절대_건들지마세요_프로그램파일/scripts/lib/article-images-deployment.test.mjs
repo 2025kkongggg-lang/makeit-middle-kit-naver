@@ -20,6 +20,7 @@ test("승인글 생성기는 이미지 분리 helper를 실제로 사용한다",
   const source = await readFile(join(programRoot, "scripts", "adsense-create-drafts.mjs"), "utf8");
   assert.match(source, /prepareArticleImages/);
   assert.match(source, /applyArticleImages/);
+  assert.match(source, /verifyStoredImages/);
   assert.match(source, /featuredImageInserted/);
   assert.match(source, /bodyImageInserted/);
 });

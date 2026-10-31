@@ -88,7 +88,18 @@ export function contentHasMedia(content, mediaId) {
   const id = Number(mediaId);
   if (!id) return false;
   const html = String(content || "");
-  return html.includes(`wp-image-${id}`) || html.includes(`"id":${id}`);
+  const classPattern = new RegExp(`\\bwp-image-${id}(?!\\d)`);
+  const blockIdPattern = new RegExp(`"id"\\s*:\\s*${id}(?!\\d)`);
+  return classPattern.test(html) || blockIdPattern.test(html);
+}
+
+export function verifyStoredImages({content, featuredMediaId, expectedFeaturedId, expectedBodyId}) {
+  const expectedFeatured = Number(expectedFeaturedId || 0);
+  const expectedBody = Number(expectedBodyId || 0);
+  return {
+    featuredImageInserted: Boolean(expectedFeatured && Number(featuredMediaId || 0) === expectedFeatured),
+    bodyImageInserted: Boolean(expectedBody && contentHasMedia(content, expectedBody)),
+  };
 }
 
 export async function prepareArticleImages({generate, upload, title, meta = {}, usdKrw = 0}) {

@@ -8,7 +8,7 @@ import {readTitleEntries, resolveTitleFile} from "./title-files.mjs";
 import {keysGuideMessage, requireLicense} from "./lib/env.mjs";
 import {wpFetch} from "./lib/wp.mjs";
 import {돈줄, 예산상태, 원장기록, 진행표시, 천단위, 퍼센트, 퍼센트문구} from "./lib/usage.mjs";
-import {applyArticleImages, buildRolePrompt, contentHasMedia, prepareArticleImages} from "./lib/article-images.mjs";
+import {applyArticleImages, buildRolePrompt, contentHasMedia, prepareArticleImages, verifyStoredImages} from "./lib/article-images.mjs";
 
 const programRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 // 앱 판은 MAKEIT_PROJECT_ROOT 로 수강생 작업 폴더를 넘긴다 (lib/env.mjs 와 같은 규칙)
@@ -1831,19 +1831,39 @@ for (let index = 0; index < titles.length; index += 1) {
     const postDate = postDateForIndex(index + dateOffset, dateMode, startDate, {randomDays, fixedTime, stepDays, hourGap, perDay, minGapHours, 피할시각들: 잡힌시각들});
     if (postDate) 잡힌시각들.push(Date.parse(postDate)); // 이번 실행에서 잡은 시각도 다음 글이 피하게
     let post = await createDraftPost({siteUrl, username, appPassword, title, html: htmlWithImage, date: postDate, meta, featuredMediaId: appliedImages.featuredMediaId, selectedCategory});
-    let postContentImageVerified = !imageResult.body || contentHasMedia(postContentText(post), imageResult.body.id);
-    if (imageResult.body && !postContentImageVerified) {
+    let storedImages = verifyStoredImages({
+      content: postContentText(post),
+      featuredMediaId: post?.featured_media,
+      expectedFeaturedId: imageResult.featured?.id,
+      expectedBodyId: imageResult.body?.id,
+    });
+    const needsImageRecovery = Boolean(
+      (imageResult.featured && !storedImages.featuredImageInserted)
+      || (imageResult.body && !storedImages.bodyImageInserted),
+    );
+    let verificationError = "";
+    if (needsImageRecovery) {
       try {
         post = await updateDraftPostContent({siteUrl, username, appPassword, postId: post.id, html: htmlWithImage, featuredMediaId: appliedImages.featuredMediaId, selectedCategory});
-        postContentImageVerified = contentHasMedia(postContentText(post), imageResult.body.id);
+        storedImages = verifyStoredImages({
+          content: postContentText(post),
+          featuredMediaId: post?.featured_media,
+          expectedFeaturedId: imageResult.featured?.id,
+          expectedBodyId: imageResult.body?.id,
+        });
       } catch (error) {
-        imageResult.failures.push({role: "body", stage: "verify", message: error instanceof Error ? error.message : String(error)});
+        verificationError = error instanceof Error ? error.message : String(error);
       }
     }
-    if (imageResult.body && !postContentImageVerified) {
-      imageResult.failures.push({role: "body", stage: "verify", message: "워드프레스 본문에서 이미지 블록을 확인하지 못함"});
+    if (imageResult.featured && !storedImages.featuredImageInserted) {
+      imageResult.failures.push({role: "featured", stage: "verify", message: verificationError || "워드프레스 대표이미지 연결을 확인하지 못함"});
+      console.log("     (대표이미지는 워드프레스 저장 결과에서 확인하지 못했지만 글은 임시저장했어요)");
+    }
+    if (imageResult.body && !storedImages.bodyImageInserted) {
+      imageResult.failures.push({role: "body", stage: "verify", message: verificationError || "워드프레스 본문에서 이미지 블록을 확인하지 못함"});
       console.log("     (본문 이미지는 워드프레스 저장 결과에서 확인하지 못했지만 글은 임시저장했어요)");
     }
+    const postContentImageVerified = !imageResult.body || storedImages.bodyImageInserted;
 
     // 랭크매스 포커스 키워드. 없는 사이트면 조용히 건너뛰되, 화면에는 왜 안 됐는지 남긴다.
     // (조용히 넘어가면 "됐다고 나오는데 실제로는 비어 있는" 사고가 난다)
@@ -1865,17 +1885,17 @@ for (let index = 0; index < titles.length; index += 1) {
       slug: post.slug || meta.slug,
       focusKeyword: meta.focusKeyword,
       featuredImageAlt: meta.featuredImageAlt,
-      featuredImageInserted: Boolean(imageResult.featured),
-      featuredMediaId: imageResult.featured?.id || 0,
-      featuredImageUrl: imageResult.featured?.sourceUrl || "",
-      bodyImageInserted: Boolean(imageResult.body),
-      bodyImageMediaId: imageResult.body?.id || 0,
-      bodyImageUrl: imageResult.body?.sourceUrl || "",
-      inlineImageInserted: Boolean(imageResult.body),
-      inlineImageMediaId: imageResult.body?.id || 0,
+      featuredImageInserted: storedImages.featuredImageInserted,
+      featuredMediaId: storedImages.featuredImageInserted ? imageResult.featured.id : 0,
+      featuredImageUrl: storedImages.featuredImageInserted ? imageResult.featured.sourceUrl : "",
+      bodyImageInserted: storedImages.bodyImageInserted,
+      bodyImageMediaId: storedImages.bodyImageInserted ? imageResult.body.id : 0,
+      bodyImageUrl: storedImages.bodyImageInserted ? imageResult.body.sourceUrl : "",
+      inlineImageInserted: storedImages.bodyImageInserted,
+      inlineImageMediaId: storedImages.bodyImageInserted ? imageResult.body.id : 0,
       postContentImageVerified,
-      inlineImageAlt: imageResult.body?.altText || "",
-      inlineImageCaption: imageResult.body?.caption || "",
+      inlineImageAlt: storedImages.bodyImageInserted ? imageResult.body.altText : "",
+      inlineImageCaption: storedImages.bodyImageInserted ? imageResult.body.caption : "",
       imageFailures: imageResult.failures,
       mappedParentCategory: titleEntry.parentCategory || "",
       mappedChildCategory: titleEntry.childCategory || "",

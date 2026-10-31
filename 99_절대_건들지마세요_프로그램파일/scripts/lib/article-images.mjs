@@ -90,3 +90,59 @@ export function contentHasMedia(content, mediaId) {
   const html = String(content || "");
   return html.includes(`wp-image-${id}`) || html.includes(`"id":${id}`);
 }
+
+export async function prepareArticleImages({generate, upload, title, meta = {}, usdKrw = 0}) {
+  const result = {
+    featured: null,
+    body: null,
+    failures: [],
+    estimatedUsd: 0,
+    estimatedKrw: 0,
+  };
+
+  for (const role of ["featured", "body"]) {
+    let generatedImage;
+    try {
+      generatedImage = await generate({
+        role,
+        title,
+        meta,
+        usdKrw,
+        prompt: buildRolePrompt({role, meta}),
+      });
+      const estimatedUsd = Number(generatedImage?.estimatedUsd || 0);
+      const estimatedKrw = Number(
+        generatedImage?.estimatedKrw ?? (estimatedUsd * Number(usdKrw || 0)),
+      );
+      result.estimatedUsd += estimatedUsd;
+      result.estimatedKrw += estimatedKrw;
+    } catch (error) {
+      result.failures.push({
+        role,
+        stage: "generate",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+
+    try {
+      result[role] = await upload({
+        role,
+        title,
+        meta,
+        generatedImage,
+        filename: mediaFilename({role, slug: meta.slug, extension: generatedImage.extension}),
+      });
+    } catch (error) {
+      result.failures.push({
+        role,
+        stage: "upload",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  result.estimatedUsd = Number(result.estimatedUsd.toFixed(6));
+  result.estimatedKrw = Number(result.estimatedKrw.toFixed(1));
+  return result;
+}
